@@ -1,6 +1,7 @@
 param(
     [string]$ProjectId = "geglobal-level-program",
     [string]$Region = "us-central1",
+    [string]$TriggerLocation = "us",
     [string]$Bucket = "knowledge-agent-cap",
     [string]$DataStoreId = "knowledge-agent-rag_1792366120415",
     [string]$SearchLocation = "global"
@@ -48,4 +49,4 @@ Invoke-Gcloud @("storage", "buckets", "add-iam-policy-binding", "gs://$Bucket", 
 
 Invoke-Gcloud @("services", "enable", "cloudfunctions.googleapis.com", "run.googleapis.com", "eventarc.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com", "--project", $ProjectId)
 
-Invoke-Gcloud @("functions", "deploy", "knowledge-agent-gcs-import", "--gen2", "--project", $ProjectId, "--region", $Region, "--runtime", "python312", "--source", "ingestion", "--entry-point", "import_gcs_object", "--trigger-event-filters", "type=google.cloud.storage.object.v1.finalized", "--trigger-event-filters", "bucket=$Bucket", "--trigger-service-account", $serviceAccount, "--service-account", $serviceAccount, "--retry", "--timeout", "540s", "--max-instances", "3", "--set-env-vars", "GCP_PROJECT_ID=$ProjectId,AGENT_SEARCH_LOCATION=$SearchLocation,AGENT_SEARCH_DATA_STORE_ID=$DataStoreId")
+Invoke-Gcloud @("functions", "deploy", "knowledge-agent-gcs-import", "--gen2", "--project", $ProjectId, "--region", $Region, "--runtime", "python312", "--source", "ingestion", "--entry-point", "import_gcs_object", "--trigger-location", $TriggerLocation, "--trigger-event-filters", "type=google.cloud.storage.object.v1.finalized", "--trigger-event-filters", "bucket=$Bucket", "--trigger-service-account", $serviceAccount, "--service-account", $serviceAccount, "--retry", "--timeout", "540s", "--max-instances", "3", "--set-env-vars", "GCP_PROJECT_ID=$ProjectId,AGENT_SEARCH_LOCATION=$SearchLocation,AGENT_SEARCH_DATA_STORE_ID=$DataStoreId")
