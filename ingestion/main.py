@@ -43,7 +43,7 @@ def import_gcs_object(cloud_event) -> None:
         bucket,
         object_name,
         ingestion_status="processing",
-        ingestion_message="Importación incremental iniciada.",
+        ingestion_message="Incremental import started.",
         ingestion_generation=generation,
     )
 
@@ -70,7 +70,7 @@ def import_gcs_object(cloud_event) -> None:
             bucket,
             object_name,
             ingestion_status="imported",
-            ingestion_message="Importación aceptada por Agent Search; indexación asíncrona.",
+            ingestion_message="Import accepted by Agent Search; indexing is asynchronous.",
             ingestion_operation=operation.operation.name,
             ingestion_generation=generation,
         )
@@ -81,7 +81,7 @@ def import_gcs_object(cloud_event) -> None:
                 bucket,
                 object_name,
                 ingestion_status="failed",
-                ingestion_message=f"Falló la importación; se reintentará. ({type(exc).__name__})",
+                ingestion_message=f"Import failed and will be retried. ({type(exc).__name__})",
                 ingestion_generation=generation,
             )
         except Exception:
