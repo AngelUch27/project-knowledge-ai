@@ -1,25 +1,25 @@
 # Project Knowledge AI
 
-Demo privado de preguntas y respuestas sobre documentos, con FastAPI, Agent Search y Gemini. La interfaz web se sirve desde la propia API.
+A private document Q&A demo built with FastAPI, Agent Search, and Gemini. The web interface is served by the API.
 
-## Secciones del demo
+## Demo sections
 
-- **Chat:** pregunta en español, respuesta de Gemini y títulos de las fuentes recuperadas.
-- **Documentos:** carga PDF, DOCX o XLSX; muestra archivos del bucket y el estado de importación.
-- **Actividad:** muestra cargas/importaciones recientes y mensajes de estado.
+- **Chat:** ask questions and receive Gemini answers with the titles of retrieved sources.
+- **Documents:** upload supported files, view bucket contents, and check ingestion status.
+- **Activity:** review recent uploads and import status messages.
 
-## Preparar una computadora nueva
+## Set up a new computer
 
-Requisitos: Windows PowerShell, Git, Python 3.10 o posterior y Google Cloud CLI (`gcloud`). La persona necesita acceso al repositorio y permisos sobre los recursos del proyecto de GCP; tener acceso de lectura al repositorio o al proyecto por sí solo no concede esos permisos.
+Requirements: Windows PowerShell, Git, Python 3.10 or later, and the Google Cloud CLI (`gcloud`). Users need access to this repository and the required permissions on the GCP resources. Repository or project read access alone does not grant those permissions.
 
-Clona la rama que contiene esta versión y entra a la carpeta:
+Clone the repository and enter the project folder:
 
 ```powershell
 git clone https://github.com/AngelUch27/project-knowledge-ai.git
 Set-Location project-knowledge-ai
 ```
 
-## Ejecutar la aplicación localmente
+## Run the application locally
 
 ```powershell
 py -m venv .venv
@@ -27,9 +27,9 @@ py -m venv .venv
 Copy-Item .env.example .env
 ```
 
-`.env.example` ya contiene los IDs del proyecto y sus recursos del demo. `.env` es la configuración local y está excluido de Git. No agregues credenciales ni archivos de claves.
+`.env.example` contains the demo project and resource IDs. `.env` stores local configuration and is excluded from Git. Do not add credentials or key files.
 
-El administrador de GCP debe dar a cada persona que ejecutará la aplicación permisos para consultar Agent Search (`roles/discoveryengine.user`), usar Vertex AI (`roles/aiplatform.user`) y leer, listar, cargar y actualizar objetos del bucket (`roles/storage.objectUser`). Después, autentícate con tu propia cuenta, sin crear ni descargar claves:
+The GCP administrator must grant each app user permission to query Agent Search (`roles/discoveryengine.user`), use Vertex AI (`roles/aiplatform.user`), and read, list, upload, and update bucket objects (`roles/storage.objectUser`). Then authenticate with your own account without creating or downloading service account keys:
 
 ```powershell
 gcloud auth login
@@ -37,23 +37,23 @@ gcloud config set project geglobal-level-program
 gcloud auth application-default login
 ```
 
-Inicia la aplicación en el equipo local:
+Start the local application:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Abre `http://127.0.0.1:8000`. Al enlazarse a `127.0.0.1`, la API solo acepta conexiones de esta computadora; además, valida el host y rechaza solicitudes de navegador de otros orígenes. La web y la API comparten origen, así que no se habilita CORS ni se expone una API pública. No cambies el host a `0.0.0.0` para este demo. Si luego se publica, usa Cloud Run con autenticación IAM y una cuenta de servicio adjunta al runtime; no despliegues una API pública sin una capa de autenticación.
+Open `http://127.0.0.1:8000`. The server binds to `127.0.0.1`, so it accepts connections from this computer only. It also validates the host and rejects browser requests from other origins. The web page and API use the same origin; CORS is not enabled and the API is not exposed publicly. Do not change the host to `0.0.0.0` for this demo. If you publish the app later, use Cloud Run with IAM authentication and an attached runtime service account. Do not deploy a public API without authentication.
 
-## Carga e indexación automática
+## Upload and automatic indexing
 
-La pestaña Documentos carga al bucket `knowledge-agent-cap` bajo `documents/raw/`. También se vigilan otros prefijos del bucket. Para cada objeto compatible finalizado, una función de Cloud Run invocada por Eventarc llama a `ImportDocuments` con la URI exacta de ese objeto y modo incremental. Se admiten PDF, DOCX, PPTX, XLSX, XLSM, TXT, MD, HTML y JSON. El estado queda en metadatos del objeto y aparece en Documentos y Actividad. Los archivos de otros tipos se ignoran.
+The Documents tab uploads files to `knowledge-agent-cap` under `documents/raw/`. Other bucket prefixes are watched as well. For each supported object that is finalized, an Eventarc-triggered Cloud Run function calls `ImportDocuments` with that object's exact URI and incremental mode. Supported formats are PDF, DOCX, PPTX, XLSX, XLSM, TXT, MD, HTML, and JSON. Ingestion status and messages are stored in object metadata and shown in Documents and Activity. Unsupported file types are ignored.
 
-## Desplegar la ingesta automática en GCP
+## Deploy automatic ingestion to GCP
 
-Esto se ejecuta una sola vez por proyecto, desde la raíz del repositorio. La cuenta que lo despliegue necesita permisos para administrar IAM, habilitar servicios y desplegar Cloud Run Functions/Eventarc. En particular, requiere `roles/run.sourceDeveloper`, `roles/serviceusage.serviceUsageConsumer` y `roles/iam.serviceAccountUser` sobre la cuenta de ejecución; también debe poder crear cuentas y roles de servicio y modificar políticas IAM. Un administrador del proyecto puede ejecutar estos pasos con su propia cuenta. Consulta los permisos de [despliegue de funciones](https://cloud.google.com/run/docs/deploy-functions).
+Run this once per project from the repository root. The deploying account needs permissions to manage IAM, enable services, and deploy Cloud Run Functions and Eventarc. In particular, it needs `roles/run.sourceDeveloper`, `roles/serviceusage.serviceUsageConsumer`, and `roles/iam.serviceAccountUser` on the runtime service account. It must also be able to create service accounts and service agent roles and modify IAM policies. A GCP project administrator can run these steps using their own account. See Google's [Cloud Run functions deployment permissions](https://cloud.google.com/run/docs/deploy-functions).
 
-En PowerShell, inicia sesión, selecciona el proyecto y concede a la cuenta activa el permiso para usar la identidad de ejecución. El bloque crea esa cuenta si aún no existe:
+In PowerShell, sign in, select the project, and grant the active account permission to use the runtime identity. This block creates the service account if it does not already exist:
 
 ```powershell
 gcloud auth login
@@ -70,23 +70,24 @@ gcloud iam service-accounts add-iam-policy-binding $serviceAccount --member="use
 gcloud functions describe knowledge-agent-gcs-import --gen2 --region us-central1 --project $project --format="value(state)"
 ```
 
-El último comando debe mostrar `ACTIVE`. El script habilita APIs y despliega `knowledge-agent-gcs-import` usando una cuenta de servicio **sin clave**. Limita la importación de Agent Search al data store indicado y la actualización de metadatos al bucket. Si la política de la organización lo requiere, un administrador también debe conceder `roles/run.builder` a la cuenta de servicio de Cloud Build indicada por Google Cloud.
+The final command should show `ACTIVE`. The script enables APIs and deploys `knowledge-agent-gcs-import` using a service account **without a key**. It limits Agent Search imports to the configured data store and metadata updates to the bucket. If required by your organization policy, a project administrator must also grant `roles/run.builder` to the Cloud Build service account specified by Google Cloud.
 
-Si estos comandos devuelven `PERMISSION_DENIED`, la cuenta activa no tiene permisos suficientes: un administrador del proyecto debe concederlos. La persona que ejecuta la aplicación local no necesita permisos de despliegue.
+If these commands return `PERMISSION_DENIED`, the active account does not have enough permissions; ask a project administrator to grant them. Users who only run the local app do not need deployment permissions.
 
-Las cargas producen un evento de Cloud Storage; Eventarc y Cloud Run Functions vuelven a intentar entregas fallidas. La importación es incremental y se solicita por archivo. Agent Search procesa e indexa de forma asíncrona, por lo que el disparador automatiza el envío pero un documento puede tardar varios minutos en estar disponible en búsquedas. La pestaña muestra “Enviado a Agent Search” cuando termina la operación de importación; eso no afirma que la propagación de búsqueda ya concluyó.
+Uploads create Cloud Storage events. Eventarc and Cloud Run Functions retry failed deliveries. Imports are incremental and requested per file. Agent Search processes and indexes files asynchronously, so a document might take several minutes to become searchable. The UI shows “Sent to Agent Search” when the import operation finishes; this does not guarantee that search indexing has already propagated.
 
-Los objetos que ya existían antes de crear el disparador no generan eventos retroactivos. Si se necesita sincronizar el histórico, se hace una importación inicial separada; no se ejecuta automáticamente para evitar volver a ingerir contenido existente.
+Objects that existed before the trigger was created do not produce retroactive events. If you need to index existing files, run a separate initial import. This is not done automatically to avoid re-importing existing content.
 
-## Rutas y configuración
+## API routes and configuration
 
-- `GET /health`: estado local del servidor; no prueba conectividad con GCP.
-- `GET /documents`: lista archivos compatibles del bucket y sus metadatos de importación.
-- `POST /documents`: carga un archivo al bucket.
-- `POST /search`: consulta la Search App.
-- `POST /ask`: busca contexto y genera una respuesta con Gemini.
-- `/docs`: documentación interactiva de FastAPI (solo accesible localmente).
+- `GET /health`: local server health; it does not check GCP connectivity.
+- `GET /documents`: lists up to 1,000 supported bucket files and their ingestion metadata. This limit only applies to the UI list; questions search the corpus indexed by Agent Search.
+- `POST /documents`: uploads one file to the bucket. The UI accepts files up to 15 MB each.
+- `POST /search`: queries the configured Search App.
+- `POST /ask`: retrieves the five most relevant results from the indexed corpus and generates an answer with Gemini. Gemini does not read all 1,000 documents for every question; Agent Search retrieves the most relevant content.
+- `/docs`: interactive FastAPI documentation, accessible locally only.
 
-Variables en `.env`: `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCS_BUCKET`, `GEMINI_MODEL`, `AGENT_SEARCH_LOCATION`, `AGENT_SEARCH_APP_ID`, `AGENT_SEARCH_SERVING_CONFIG` y `AGENT_SEARCH_DATA_STORE_ID`. ADC aporta las credenciales. No guardes tokens, claves ni documentos en Git.
+The `.env` variables are `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCS_BUCKET`, `GEMINI_MODEL`, `AGENT_SEARCH_LOCATION`, `AGENT_SEARCH_APP_ID`, `AGENT_SEARCH_SERVING_CONFIG`, and `AGENT_SEARCH_DATA_STORE_ID`. Application Default Credentials provide authentication. Never commit tokens, keys, or documents to Git.
 
-Las operaciones de búsqueda, importación y Gemini pueden generar cargos en el proyecto compartido.
+Search, ingestion, and Gemini requests can incur charges in the shared project.
+
