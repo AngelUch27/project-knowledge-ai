@@ -40,7 +40,7 @@ if (-not (Test-GcloudResource { gcloud iam roles describe $bucketRoleId --projec
 }
 
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/discoveryengine.editor", "--condition", "expression=resource.name.startsWith('projects/$ProjectId/locations/$SearchLocation/collections/default_collection/dataStores/$DataStoreId'),title=knowledge-agent-datastore-only,description=Allow document imports only into the Knowledge Agent data store")
-Invoke-Gcloud @("storage", "buckets", "add-iam-policy-binding", "gs://$Bucket", "--member", "serviceAccount:$serviceAccount", "--role", "projects/$ProjectId/roles/$bucketRoleId")
+Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "projects/$ProjectId/roles/$bucketRoleId", "--condition", "expression=resource.name.startsWith('projects/_/buckets/$Bucket/objects/'),title=knowledge-agent-bucket-only,description=Allow ingestion metadata access only to objects in the configured bucket")
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/logging.logWriter", "--condition=None")
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/eventarc.eventReceiver", "--condition=None")
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/run.invoker", "--condition", "expression=resource.name == 'projects/$ProjectId/locations/$Region/services/knowledge-agent-gcs-import',title=knowledge-agent-function-only,description=Allow Eventarc to invoke only the ingestion function")
