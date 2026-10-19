@@ -1,0 +1,3 @@
+functions-framework==3.8.2
+google-cloud-discoveryengine==0.20.3
+google-cloud-storage==3.17.1
