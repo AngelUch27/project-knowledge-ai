@@ -55,6 +55,17 @@ La respuesta de `/health` no consulta GCP ni requiere credenciales:
 {"status":"ok","service":"project-knowledge-ai-api"}
 ```
 
+## Integración GCP inicial
+
+La primera versión permite cargar archivos PDF/DOCX a un bucket existente de Cloud Storage y preguntar por el contenido usando Gemini en Vertex AI. El contenido consultado se envía al modelo. La extracción de texto y la selección de fragmentos son locales y básicas; PDF escaneado/OCR, búsqueda semántica, base de datos y gestión de usuarios quedan fuera de este MVP.
+
+1. Copia `.env.example` como `.env` y completa `GCP_PROJECT_ID` y `GCS_BUCKET` con valores de un proyecto y bucket ya aprobados. `GCP_LOCATION` y `GEMINI_MODEL` se pueden ajustar.
+2. Configura ADC en el equipo siguiendo la guía oficial de autenticación de Google Cloud. No guardes archivos de claves ni tokens en el repositorio.
+3. Habilita las APIs necesarias y concede a la identidad ADC permisos mínimos para Vertex AI y para crear/leer objetos en el bucket. No se crean recursos automáticamente.
+4. Inicia Uvicorn desde la carpeta del repositorio. `/docs` muestra `POST /documents` y `POST /ask`.
+
+Sin las variables de GCP, la API sigue arrancando y `/health` responde normalmente; las operaciones documentales indican qué configuración falta. El uso de Cloud Storage y Gemini puede generar cargos en la cuenta de GCP.
+
 ## Dependencias y configuración
 
 Las dependencias de Python están en `backend/requirements.txt`. Para reinstalarlas después de actualizar ese archivo, ejecuta:
@@ -63,4 +74,4 @@ Las dependencias de Python están en `backend/requirements.txt`. Para reinstalar
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 ```
 
-No se incluyen credenciales, claves ADC ni configuración de GCP en esta etapa. No guardes secretos en el repositorio.
+No se incluyen credenciales ni claves ADC. `.env` está excluido de Git; no guardes secretos en el repositorio.
