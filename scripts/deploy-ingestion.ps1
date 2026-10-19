@@ -11,6 +11,8 @@ $ErrorActionPreference = "Stop"
 $serviceAccountName = "knowledge-agent-ingest"
 $serviceAccount = "$serviceAccountName@$ProjectId.iam.gserviceaccount.com"
 $bucketRoleId = "knowledgeAgentBucketMetadata"
+$storageServiceAgent = (& gcloud storage service-agent --project $ProjectId | Where-Object { $_ -match 'service-\d+@gs-project-accounts\.iam\.gserviceaccount\.com' } | ForEach-Object { $_.Trim() } | Select-Object -First 1)
+if (-not $storageServiceAgent) { throw "Could not determine the Cloud Storage service agent for project $ProjectId" }
 
 function Test-GcloudResource([scriptblock]$Command) {
     try {
@@ -46,6 +48,7 @@ Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "s
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/eventarc.eventReceiver", "--condition=None")
 Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/run.invoker", "--condition", "expression=resource.name == 'projects/$ProjectId/locations/$Region/services/knowledge-agent-gcs-import',title=knowledge-agent-function-only,description=Allow Eventarc to invoke only the ingestion function")
 Invoke-Gcloud @("storage", "buckets", "add-iam-policy-binding", "gs://$Bucket", "--project", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/storage.bucketViewer")
+Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "serviceAccount:$storageServiceAgent", "--role", "roles/pubsub.publisher", "--condition=None")
 
 Invoke-Gcloud @("services", "enable", "cloudfunctions.googleapis.com", "run.googleapis.com", "eventarc.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com", "--project", $ProjectId)
 
