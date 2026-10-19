@@ -15,7 +15,7 @@ Requisitos: Windows PowerShell, Git, Python 3.10 o posterior y Google Cloud CLI 
 Clona la rama que contiene esta versión y entra a la carpeta:
 
 ```powershell
-git clone --branch feat/agent-search-rag https://github.com/AngelUch27/project-knowledge-ai.git
+git clone https://github.com/AngelUch27/project-knowledge-ai.git
 Set-Location project-knowledge-ai
 ```
 
