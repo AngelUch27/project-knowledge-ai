@@ -60,7 +60,7 @@ Invoke-Gcloud @("run", "services", "add-iam-policy-binding", $ServiceName, "--pr
 
 # Who may sign in.
 foreach ($member in $AllowedMembers) {
-    Invoke-Gcloud @("beta", "iap", "web", "add-iam-policy-binding", "--project", $ProjectId, "--resource-type", "cloud-run", "--service", $ServiceName, "--region", $Region, "--member", $member, "--role", "roles/iap.httpsResourceAccessor")
+    Invoke-Gcloud @("iap", "web", "add-iam-policy-binding", "--project", $ProjectId, "--resource-type", "cloud-run", "--service", $ServiceName, "--region", $Region, "--member", $member, "--role", "roles/iap.httpsResourceAccessor")
 }
 
 $url = (& gcloud run services describe $ServiceName --project $ProjectId --region $Region --format "value(status.url)").Trim()
