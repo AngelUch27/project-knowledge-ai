@@ -74,13 +74,16 @@ class Decision:
 
 
 DEFAULT_POLICIES: dict[str, tuple[Window, ...]] = {
+    # Wide on purpose: the limits exist to stop a runaway script or an obvious attack, not to
+    # slow down a room of people demoing from one machine. A question costs ~$0.002-0.005, so
+    # even a loop hitting the hourly cap spends a few dollars before it is cut off.
     # questions: Agent Search + Gemini per call
-    "ask": (Window(_env_int("RATE_LIMIT_ASK_PER_MINUTE", 20), 60), Window(_env_int("RATE_LIMIT_ASK_PER_HOUR", 200), 3600)),
-    "search": (Window(60, 60), Window(600, 3600)),
+    "ask": (Window(_env_int("RATE_LIMIT_ASK_PER_MINUTE", 60), 60), Window(_env_int("RATE_LIMIT_ASK_PER_HOUR", 1000), 3600)),
+    "search": (Window(_env_int("RATE_LIMIT_SEARCH_PER_MINUTE", 300), 60), Window(3000, 3600)),
     # imports and syncs: each one is an indexing operation and GitHub/Graph traffic
-    "import": (Window(_env_int("RATE_LIMIT_IMPORTS_PER_HOUR", 12), 3600),),
+    "import": (Window(_env_int("RATE_LIMIT_IMPORTS_PER_HOUR", 60), 3600),),
     # file uploads
-    "upload": (Window(30, 60), Window(_env_int("RATE_LIMIT_UPLOADS_PER_HOUR", 200), 3600)),
+    "upload": (Window(_env_int("RATE_LIMIT_UPLOADS_PER_MINUTE", 100), 60), Window(_env_int("RATE_LIMIT_UPLOADS_PER_HOUR", 1000), 3600)),
 }
 
 

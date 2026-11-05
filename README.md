@@ -157,7 +157,7 @@ All routes are local-only. Imports, uploads and questions are rate-limited (see 
 | `GET /usage` | Current consumption of every rate-limit policy. |
 | `/docs` | Interactive OpenAPI documentation. |
 
-**Rate limits** (per client, sliding windows; override with the `RATE_LIMIT_*` variables in `.env`): questions 20/min and 200/h, searches 60/min, imports and syncs 12/h, uploads 30/min and 200/h. Responses carry `X-RateLimit-*` headers; from 80 % the UI shows a heads-up and the server logs a warning; over the limit the API answers `429` with `Retry-After`. Agent-triggered imports count against the same budget.
+**Rate limits** (per client, sliding windows; override with the `RATE_LIMIT_*` variables in `.env`): questions 60/min and 1,000/h, searches 300/min, imports and syncs 60/h, uploads 100/min and 1,000/h. They are deliberately wide: their job is to stop a runaway script or an obvious attack, not a room of people demoing from one machine. Responses carry `X-RateLimit-*` headers; from 80 % the UI shows a heads-up and the server logs a warning; over the limit the API answers `429` with `Retry-After`. Agent-triggered imports count against the same budget.
 
 **Configuration** (`.env`): `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCS_BUCKET`, `GEMINI_MODEL`, `AGENT_SEARCH_LOCATION`, `AGENT_SEARCH_APP_ID`, `AGENT_SEARCH_SERVING_CONFIG`, `AGENT_SEARCH_DATA_STORE_ID`, optional `SHAREPOINT_*` and `RATE_LIMIT_*`. Authentication is always Application Default Credentials; there are no keys to leak. Searches, imports and Gemini calls incur charges in the shared project.
 
