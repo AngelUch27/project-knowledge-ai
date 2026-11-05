@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from uuid import UUID, uuid4
 from datetime import timezone
 
@@ -16,6 +17,7 @@ from google.cloud import storage
 from google.genai.types import GenerateContentConfig, HttpOptions
 from pydantic import BaseModel, Field
 
+from backend.github_import import GitHubImportError, import_repository
 from backend.settings import get_settings
 
 app = FastAPI(
@@ -37,6 +39,8 @@ async def restrict_browser_origin(request, call_next):
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_LISTED_DOCUMENTS = 1000
+GITHUB_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 SUPPORTED_TYPES = {
     ".pdf": "application/pdf",
@@ -89,6 +93,10 @@ class StoredDocument(BaseModel):
     indexing_message: str | None = None
 
 
+class GitHubRepositoryRequest(BaseModel):
+    repository_url: str = Field(min_length=1, max_length=500)
+
+
 def _require_gcp_settings():
     settings = get_settings()
     missing = settings.missing_gcp_values()
@@ -135,6 +143,8 @@ def list_documents() -> list[StoredDocument]:
         blobs = client.list_blobs(settings.gcs_bucket, max_results=MAX_LISTED_DOCUMENTS)
         documents = []
         for blob in blobs:
+            if blob.name.startswith("github/raw/"):
+                continue
             suffix = Path(blob.name).suffix.lower()
             if suffix not in SUPPORTED_TYPES:
                 continue
@@ -156,6 +166,71 @@ def list_documents() -> list[StoredDocument]:
         raise HTTPException(status_code=503, detail="No valid Application Default Credentials were found for GCP.") from exc
     except GoogleAPIError as exc:
         raise HTTPException(status_code=502, detail="Could not read the configured bucket.") from exc
+    finally:
+        if client is not None:
+            client.close()
+
+
+@app.post("/github/repositories", status_code=202)
+def import_github_repository(request: GitHubRepositoryRequest) -> dict[str, str | int]:
+    """Stage public GitHub documentation; Cloud Storage ingestion is asynchronous."""
+    settings = _require_gcp_settings()
+    try:
+        result = import_repository(request.repository_url, settings.gcs_bucket)
+    except GitHubImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except google.auth.exceptions.GoogleAuthError as exc:
+        raise HTTPException(status_code=503, detail="No valid Application Default Credentials were found for GCP.") from exc
+    except GoogleAPIError as exc:
+        raise HTTPException(status_code=502, detail="Cloud Storage could not stage the repository documents.") from exc
+
+    return {
+        "repository": result.repository,
+        "commit_sha": result.commit_sha,
+        "staged_documents": result.staged_documents,
+        "status": "staged",
+    }
+
+
+@app.get("/github/repositories/{owner}/{repo}/status")
+def github_repository_status(owner: str, repo: str) -> dict[str, object]:
+    """Read GitHub source and ingestion metadata for one staged repository."""
+    if not GITHUB_OWNER_PATTERN.fullmatch(owner) or not GITHUB_REPOSITORY_PATTERN.fullmatch(repo):
+        raise HTTPException(status_code=400, detail="The GitHub owner or repository name is invalid.")
+
+    settings = _require_gcp_settings()
+    prefix = f"github/raw/{owner.lower()}/{repo.lower()}/"
+    client = None
+    try:
+        client = storage.Client(project=settings.project_id)
+        documents = []
+        for blob in client.list_blobs(settings.gcs_bucket, prefix=prefix):
+            metadata = blob.metadata or {}
+            if metadata.get("source_type") != "github":
+                continue
+            updated = blob.updated.astimezone(timezone.utc).isoformat() if blob.updated else None
+            documents.append(
+                {
+                    "path": metadata.get("github_path") or blob.name.removeprefix(prefix),
+                    "gcs_uri": f"gs://{settings.gcs_bucket}/{blob.name}",
+                    "github_url": metadata.get("github_url"),
+                    "github_commit_sha": metadata.get("github_commit_sha"),
+                    "size_bytes": blob.size or 0,
+                    "updated_at": updated,
+                    "ingestion_status": metadata.get("ingestion_status", "untracked"),
+                    "ingestion_message": metadata.get("ingestion_message"),
+                }
+            )
+        documents.sort(key=lambda item: str(item["path"]))
+        return {
+            "repository": f"{owner}/{repo}",
+            "documents": documents,
+            "staged_documents": len(documents),
+        }
+    except google.auth.exceptions.GoogleAuthError as exc:
+        raise HTTPException(status_code=503, detail="No valid Application Default Credentials were found for GCP.") from exc
+    except GoogleAPIError as exc:
+        raise HTTPException(status_code=502, detail="Could not read GitHub repository metadata from the bucket.") from exc
     finally:
         if client is not None:
             client.close()
