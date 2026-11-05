@@ -112,6 +112,27 @@
     .upload-info h3 { margin: 0 0 9px; color: #e2e9f5; font-size: 11px; }
     .upload-info p { margin: 0; color: #8a99ae; font-size: 10px; line-height: 1.7; }
     .notice { margin-top: 13px; padding: 10px; border: 1px solid #344055; border-radius: 9px; color: #a1aec2; background: #141e2b; font-size: 9px; line-height: 1.6; }
+    .github-section { margin-bottom: 17px; padding: 17px; border-color: #355044; background: linear-gradient(135deg, #12201f, #101820 75%); }
+    .github-section + .github-section { margin-top: 17px; }
+    .github-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+    .github-head h3 { margin: 0 0 5px; color: #e2eee8; font-size: 12px; font-weight: 650; }
+    .github-head p { margin: 0; color: #8da59a; font-size: 9px; line-height: 1.6; }
+    .github-form { display: flex; align-items: end; gap: 10px; }
+    .github-field { flex: 1; min-width: 0; }
+    .github-field label { display: block; margin: 0 0 6px; color: #aebfb5; font-size: 9px; font-weight: 650; }
+    .github-field input { width: 100%; min-height: 38px; border: 1px solid #385248; border-radius: 8px; padding: 8px 10px; outline: 0; color: #e5eee9; background: #0e1718; font: inherit; font-size: 10px; }
+    .github-field input:focus { border-color: #69bd99; box-shadow: 0 0 0 3px #64d6b01c; }
+    .github-field input::placeholder { color: #6c8178; }
+    .github-submit { border-color: #4d9c78; background: linear-gradient(135deg, #338461, #246348); box-shadow: 0 5px 15px #286c4b33; }
+    .github-result { min-height: 18px; margin: 11px 0 0; color: #a9c9b8; font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+    .github-result.error { color: #f2a4a0; }
+    .github-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+    .github-count { min-width: 0; padding: 10px; border: 1px solid #2a4039; border-radius: 8px; background: #101a1a; }
+    .github-count span { display: block; color: #82998e; font-size: 8px; }
+    .github-count strong { display: block; margin-top: 5px; color: #dcebe2; font-size: 16px; font-weight: 650; }
+    .github-documents { display: grid; gap: 6px; }
+    .github-document { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid #243832; border-radius: 7px; background: #101919; }
+    .github-document-path { min-width: 0; overflow-wrap: anywhere; color: #b9c9c0; font-size: 9px; }
     .table-card { margin-top: 17px; overflow: hidden; }
     .table-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border-soft); }
     .table-head h3 { margin: 0; color: #e2e8f3; font-size: 11px; font-weight: 650; }
@@ -148,6 +169,8 @@
       .nav button { justify-content: center; padding: 12px 8px; }
       .chat-layout, .upload-panel { grid-template-columns: 1fr; }
       .side-card { display: none; }
+      .github-form { align-items: stretch; flex-direction: column; }
+      .github-submit { align-self: flex-start; }
     }
     @media (max-width: 600px) {
       .shell { display: block; }
@@ -167,6 +190,8 @@
       .messages { min-height: 300px; padding: 15px; }
       .msg { max-width: 96%; }
       .upload-panel { padding: 12px; }
+      .github-section { padding: 13px; }
+      .github-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .table-head { align-items: flex-start; }
       .activity-item { grid-template-columns: 34px minmax(0, 1fr); }
       .activity-item .status { grid-column: 2; justify-self: start; }
@@ -205,6 +230,25 @@
         </section>
         <section class="page" id="page-documents">
           <div class="page-head"><div><div class="eyebrow">Knowledge library</div><h2>Documents</h2><p>Upload files and track their submission to Agent Search.</p></div></div>
+          <section class="card github-section" aria-labelledby="github-import-title">
+            <div class="github-head"><div><h3 id="github-import-title">GitHub Repository Import</h3><p>Stage public repository documentation from README.md and Markdown files under docs/.</p></div></div>
+            <form class="github-form" id="github-import-form">
+              <div class="github-field"><label for="repository-url">Repository URL</label><input id="repository-url" name="repository_url" type="url" placeholder="https://github.com/owner/repository" autocomplete="url" required></div>
+              <button class="primary github-submit" id="github-import-button" type="submit">Import Repository</button>
+            </form>
+            <p class="github-result" id="github-import-result" role="status" aria-live="polite"></p>
+          </section>
+          <section class="card github-section" aria-labelledby="github-status-title">
+            <div class="github-head"><div><h3 id="github-status-title">GitHub Repository Status</h3><p id="github-status-repository">Import a repository to see document ingestion status.</p></div><button class="subtle" id="refresh-github-status" type="button" disabled>↻ Refresh</button></div>
+            <div class="github-summary" aria-label="GitHub document status counts">
+              <div class="github-count"><span>Imported</span><strong id="github-count-imported">0</strong></div>
+              <div class="github-count"><span>Processing</span><strong id="github-count-processing">0</strong></div>
+              <div class="github-count"><span>Pending</span><strong id="github-count-pending">0</strong></div>
+              <div class="github-count"><span>Failed</span><strong id="github-count-failed">0</strong></div>
+            </div>
+            <div class="github-documents" id="github-documents"><div class="empty">No repository status loaded.</div></div>
+            <p class="github-result" id="github-status-result" role="status" aria-live="polite"></p>
+          </section>
           <div class="card upload-panel"><div class="dropzone" id="dropzone"><div><div class="upload-icon" aria-hidden="true">↑</div><h3>Drop your documents here</h3><p>PDF, DOCX, PPTX, XLSX, XLSM, TXT, MD, HTML, or JSON · up to 15 MB per file</p><label class="primary file-button">Choose files<input id="file-input" type="file" accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.txt,.md,.html,.json" multiple aria-label="Choose documents"></label></div></div>
             <div class="upload-info"><h3>Automatic indexing</h3><p>After a file reaches the bucket, a Cloud Storage event requests an incremental import into Agent Search.</p><div class="notice">Importing and indexing happen asynchronously. A new file can take a few minutes to appear in answers.</div></div>
           </div>
@@ -233,6 +277,10 @@
     function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
     function renderDocs(){const body=$('#documents-body');if(!docs.length){body.innerHTML='<tr><td colspan="4" class="empty">No compatible files found in the bucket yet.</td></tr>';return}body.innerHTML=docs.map(d=>`<tr><td><div class="filename">${escapeHtml(d.filename)}</div><div class="filetype">${escapeHtml(d.uri)}</div></td><td>${d.updated_at?new Date(d.updated_at).toLocaleString('en-US'):'—'}</td><td>${prettySize(d.size_bytes)}</td><td>${badge(d.indexing_status)}</td></tr>`).join('')}
     function renderActivity(){const list=$('#activity-list');if(!docs.length){list.innerHTML='<div class="card empty">No document activity yet.</div>';return}list.innerHTML=docs.slice(0,30).map(d=>`<div class="card activity-item"><div class="activity-icon" aria-hidden="true">${d.indexing_status==='failed'?'!':'⇧'}</div><div><strong>${escapeHtml(d.filename)}</strong><small>${d.updated_at?new Date(d.updated_at).toLocaleString('en-US'):''}${d.indexing_message?' · '+escapeHtml(d.indexing_message):''}</small></div>${badge(d.indexing_status)}</div>`).join('')}
+    let activeGithubRepository=null;
+    async function refreshGithubStatus(){if(!activeGithubRepository)return;const button=$('#refresh-github-status'),result=$('#github-status-result'),list=$('#github-documents');button.disabled=true;result.classList.remove('error');result.textContent='Loading repository status…';try{const owner=encodeURIComponent(activeGithubRepository.owner),repo=encodeURIComponent(activeGithubRepository.repo);const response=await fetch(`/github/repositories/${owner}/${repo}/status`);const data=await response.json();if(!response.ok)throw new Error(data.detail||'Could not load repository status.');const documents=data.documents||[],counts={imported:0,processing:0,pending:0,failed:0};documents.forEach(document=>{const status=String(document.ingestion_status||'untracked').toLowerCase();if(Object.hasOwn(counts,status))counts[status]++});Object.entries(counts).forEach(([status,count])=>{$(`#github-count-${status}`).textContent=String(count)});$('#github-status-repository').textContent=data.repository||`${activeGithubRepository.owner}/${activeGithubRepository.repo}`;if(!documents.length){list.innerHTML='<div class="empty">No GitHub documents found for this repository.</div>'}else{list.innerHTML=documents.map(document=>`<div class="github-document"><span class="github-document-path">${escapeHtml(document.path||'')}</span>${badge(document.ingestion_status||'untracked')}</div>`).join('')}result.textContent='Repository ingestion status refreshed.'}catch(error){result.classList.add('error');result.textContent=error.message}finally{button.disabled=false}}
+    $('#github-import-form').addEventListener('submit',async event=>{event.preventDefault();const input=$('#repository-url'),button=$('#github-import-button'),result=$('#github-import-result');const repositoryUrl=input.value.trim();if(!repositoryUrl)return;button.disabled=true;button.innerHTML='<span class="spinner" aria-hidden="true"></span>Importing…';result.classList.remove('error');result.textContent='Staging repository documentation…';try{const response=await fetch('/github/repositories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repository_url:repositoryUrl})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Repository import failed.');const parts=String(data.repository||'').split('/');if(parts.length!==2)throw new Error('The server returned an invalid repository name.');activeGithubRepository={owner:parts[0],repo:parts[1]};$('#refresh-github-status').disabled=false;result.textContent=`${data.repository} · Commit ${data.commit_sha} · ${data.staged_documents} documents staged.`;$('#github-status-repository').textContent=data.repository;await refreshGithubStatus()}catch(error){result.classList.add('error');result.textContent=error.message}finally{button.disabled=false;button.textContent='Import Repository'}});
+    $('#refresh-github-status').addEventListener('click',refreshGithubStatus);
     $('#refresh-docs').addEventListener('click',loadDocuments);$('#refresh-activity').addEventListener('click',loadDocuments);
     async function upload(files){for(const file of files){const fd=new FormData();fd.append('file',file);try{const r=await fetch('/documents',{method:'POST',body:fd});const data=await r.json();if(!r.ok)throw new Error(data.detail||'Upload failed.');toast(`${file.name}: uploaded`)}catch(err){toast(`${file.name}: ${err.message}`)}}await loadDocuments()}
     $('#file-input').addEventListener('change',e=>{if(e.target.files.length)upload([...e.target.files]);e.target.value=''});
