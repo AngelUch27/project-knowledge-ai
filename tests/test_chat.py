@@ -85,6 +85,15 @@ def test_toolbox_marks_only_writing_tools_as_actions(monkeypatch):
     assert toolbox.get("import_github_repository").action and toolbox.get("sync_github_repositories").action
 
 
+def test_read_document_refuses_uris_outside_the_knowledge_base_bucket(monkeypatch):
+    monkeypatch.setenv("GCS_BUCKET", "knowledge-agent-cap")
+    monkeypatch.setattr(main, "fetch_document", lambda uri, project: (_ for _ in ()).throw(AssertionError("must not be called")))
+    read = main.build_toolbox(main.get_settings()).get("read_document").run
+    for uri in ["gs://other-bucket/documents/raw/secret.pdf", "gs://knowledge-agent-cap/manifest/run.log", "https://example.com/x.pdf", ""]:
+        result = read({"uri": uri})
+        assert "error" in result and result["error"].startswith("Refused"), uri
+
+
 def test_sharepoint_tool_appears_when_configured(monkeypatch):
     monkeypatch.setenv("SHAREPOINT_TENANT_ID", "t")
     monkeypatch.setenv("SHAREPOINT_CLIENT_ID", "c")

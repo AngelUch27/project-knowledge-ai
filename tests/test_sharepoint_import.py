@@ -68,8 +68,10 @@ class FakeGraph:
 
     def get(self, url, headers=None, timeout=None, stream=False):
         self.requests.append(("GET", url))
-        if url.startswith("https://dl.example/"):
-            return FakeResponse(200, body=self.files[url[len("https://dl.example/"):]])
+        if url.startswith("https://contoso.sharepoint.com/dl/"):
+            return FakeResponse(200, body=self.files[url[len("https://contoso.sharepoint.com/dl/"):]])
+        if url.startswith("https://evil.example/"):
+            raise AssertionError("a non-SharePoint download URL must never be fetched")
         assert headers["Authorization"] == "Bearer tok"
         if url.endswith("/sites/contoso.sharepoint.com:/sites/Ops"):
             return FakeResponse(200, {"id": "site-1"})
@@ -79,13 +81,14 @@ class FakeGraph:
             return FakeResponse(200, {"value": [
                 {"id": "f1", "name": "Procedures", "folder": {}},
                 {"id": "i2", "name": "Readme.md", "size": 8, "webUrl": "https://contoso.sharepoint.com/sites/Ops/Readme.md",
-                 "lastModifiedDateTime": "2026-11-01T00:00:00Z", "@microsoft.graph.downloadUrl": "https://dl.example/Readme.md"},
-                {"id": "i3", "name": "image.png", "size": 4, "@microsoft.graph.downloadUrl": "https://dl.example/image.png"},
+                 "lastModifiedDateTime": "2026-11-01T00:00:00Z", "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/dl/Readme.md"},
+                {"id": "i3", "name": "image.png", "size": 4, "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/dl/image.png"},
+                {"id": "i5", "name": "relay.txt", "size": 5, "@microsoft.graph.downloadUrl": "https://evil.example/relay.txt"},
             ]})
         if url.endswith("/drives/drive-1/items/f1/children"):
             return FakeResponse(200, {"value": [
                 {"id": "i4", "name": "SOP.pdf", "size": 12, "webUrl": "https://contoso.sharepoint.com/sites/Ops/Procedures/SOP.pdf",
-                 "@microsoft.graph.downloadUrl": "https://dl.example/Procedures/SOP.pdf"},
+                 "@microsoft.graph.downloadUrl": "https://contoso.sharepoint.com/dl/Procedures/SOP.pdf"},
             ]})
         return FakeResponse(404, {})
 
@@ -146,8 +149,11 @@ def test_import_site_stages_supported_files_and_mirrors_removals():
     assert metadata["sharepoint_url"] == "https://contoso.sharepoint.com/sites/Ops/Procedures/SOP.pdf"
     assert metadata["ingestion_status"] == "pending"
     assert storage._bucket.deleted == ["sharepoint/raw/contoso.sharepoint.com/sites/Ops/Documents/Old/gone.docx"]
-    # the PNG was never downloaded
-    assert ("GET", "https://dl.example/image.png") not in graph.requests
+    # the PNG and the non-SharePoint download URL were never fetched
+    fetched = [u for m, u in graph.requests if m == "GET"]
+    assert "https://contoso.sharepoint.com/dl/image.png" not in fetched
+    assert not any(u.startswith("https://evil.example/") for u in fetched)
+    assert "sharepoint/raw/contoso.sharepoint.com/sites/Ops/Documents/relay.txt" not in storage._bucket.uploaded
 
 
 def test_forbidden_site_gives_a_clear_permission_error():

@@ -564,7 +564,12 @@ def build_toolbox(settings) -> Toolbox:
 
     def read(args):
         uri, focus = str(args.get("uri", "")), str(args.get("focus", "") or "")
-        document = fetch_document(uri, settings.project_id) if uri.startswith("gs://") else None
+        parts = split_gcs_uri(uri)
+        # Only the knowledge-base bucket is readable, whatever URI the model (or a document it
+        # read) comes up with: the user's credentials may reach other buckets, the agent must not.
+        if parts is None or parts[0] != bucket or Path(parts[1]).suffix.lower() not in SUPPORTED_TYPES:
+            return {"error": f"Refused: {uri} is not a supported document of the knowledge base bucket."}
+        document = fetch_document(uri, settings.project_id)
         if document is None:
             return {"error": f"Could not read {uri}: it does not exist or is not in the bucket."}
         passages = select_passages(document.text or "", focus or uri, MAX_CONTEXT_CHARS_PER_SOURCE) if document.text else []

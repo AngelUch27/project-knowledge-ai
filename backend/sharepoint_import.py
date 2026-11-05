@@ -114,6 +114,16 @@ def parse_site_url(site_url: str) -> tuple[str, str]:
     return host, f"{parts[0].lower()}/{parts[1]}"
 
 
+def _is_sharepoint_url(url: str) -> bool:
+    """Only download from SharePoint Online hosts, never from a URL Graph could be made to relay."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host.endswith(".sharepoint.com") or host.endswith(".sharepoint-df.com"))
+
+
 def _new_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"Accept": "application/json", "User-Agent": "project-knowledge-ai-sharepoint-importer"})
@@ -199,7 +209,7 @@ def _list_files(session: requests.Session, token: str, host: str, site_path: str
                 if PurePosixPath(name).suffix.lower() not in SUPPORTED_SUFFIXES:
                     continue
                 download = item.get("@microsoft.graph.downloadUrl")
-                if not isinstance(download, str) or not download.startswith("https://"):
+                if not isinstance(download, str) or not _is_sharepoint_url(download):
                     continue
                 files.append(
                     _RemoteFile(
