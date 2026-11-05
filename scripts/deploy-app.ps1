@@ -8,7 +8,10 @@ param(
     [string]$SearchLocation = "global",
     [string]$GeminiModel = "gemini-2.5-flash",
     # Who may open the app through Identity-Aware Proxy, e.g. "domain:example.com" or "user:someone@example.com".
-    [string[]]$AllowedMembers = @("domain:capgemini.com")
+    [string[]]$AllowedMembers = @("domain:capgemini.com"),
+    # -PublicAccess skips IAP and lets anyone with the URL in. Only for a private demo whose link you do
+    # not share: every visitor spends Gemini/Agent Search budget (the per-IP rate limits still apply).
+    [switch]$PublicAccess
 )
 
 # Publishes the web app + API on Cloud Run behind Identity-Aware Proxy (IAP):
@@ -52,7 +55,16 @@ Invoke-Gcloud @("projects", "add-iam-policy-binding", $ProjectId, "--member", "s
 Invoke-Gcloud @("storage", "buckets", "add-iam-policy-binding", "gs://$Bucket", "--project", $ProjectId, "--member", "serviceAccount:$serviceAccount", "--role", "roles/storage.objectUser")
 
 $appEnv = "GCP_PROJECT_ID=$ProjectId,GCP_LOCATION=$Region,GCS_BUCKET=$Bucket,GEMINI_MODEL=$GeminiModel,AGENT_SEARCH_LOCATION=$SearchLocation,AGENT_SEARCH_APP_ID=$SearchAppId,AGENT_SEARCH_SERVING_CONFIG=default_search,AGENT_SEARCH_DATA_STORE_ID=$DataStoreId,ALLOWED_HOSTS=*.run.app"
-Invoke-Gcloud @("run", "deploy", $ServiceName, "--source", ".", "--project", $ProjectId, "--region", $Region, "--service-account", $serviceAccount, "--no-allow-unauthenticated", "--iap", "--ingress", "all", "--min-instances", "0", "--max-instances", "3", "--memory", "1Gi", "--cpu", "1", "--timeout", "300", "--concurrency", "20", "--set-env-vars", $appEnv)
+$accessArgs = if ($PublicAccess) { @("--allow-unauthenticated", "--no-iap") } else { @("--no-allow-unauthenticated", "--iap") }
+Invoke-Gcloud (@("run", "deploy", $ServiceName, "--source", ".", "--project", $ProjectId, "--region", $Region, "--service-account", $serviceAccount, "--ingress", "all", "--min-instances", "0", "--max-instances", "3", "--memory", "1Gi", "--cpu", "1", "--timeout", "300", "--concurrency", "20", "--set-env-vars", $appEnv) + $accessArgs)
+
+$url = (& gcloud run services describe $ServiceName --project $ProjectId --region $Region --format "value(status.url)").Trim()
+if ($PublicAccess) {
+    Write-Host ""
+    Write-Host "Knowledge Agent is published at: $url"
+    Write-Host "WARNING: anyone with this URL can use it. Do not share it widely; re-run without -PublicAccess to require sign-in."
+    return
+}
 
 # IAP's service agent calls the service on behalf of signed-in users.
 $projectNumber = (& gcloud projects describe $ProjectId --format "value(projectNumber)").Trim()
@@ -63,7 +75,6 @@ foreach ($member in $AllowedMembers) {
     Invoke-Gcloud @("iap", "web", "add-iam-policy-binding", "--project", $ProjectId, "--resource-type", "cloud-run", "--service", $ServiceName, "--region", $Region, "--member", $member, "--role", "roles/iap.httpsResourceAccessor")
 }
 
-$url = (& gcloud run services describe $ServiceName --project $ProjectId --region $Region --format "value(status.url)").Trim()
 Write-Host ""
 Write-Host "Knowledge Agent is published at: $url"
 Write-Host "Sign-in is required; allowed: $($AllowedMembers -join ', ')"
