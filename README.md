@@ -90,7 +90,28 @@ Objects that existed before the trigger was created do not produce retroactive e
 - `GET /documents`: lists up to 1,000 supported bucket files and their ingestion metadata. This limit only applies to the UI list; questions search the corpus indexed by Agent Search.
 - `POST /documents`: uploads one file to the bucket. The UI accepts files up to 15 MB each.
 - `POST /search`: queries the configured Search App.
-- `POST /ask`: retrieves the five most relevant results from the indexed corpus, reads those objects from the bucket to extract the passages that best match the question (the Standard edition of Agent Search only returns short snippets), and generates an answer with Gemini in the language of the question. Gemini does not read all 1,000 documents for every question; Agent Search retrieves the most relevant content. The optional `history` field (previous `{"role": "user"|"assistant", "content": ...}` turns, up to 20) gives the conversation memory: a follow-up such as "and who approves it?" is first rewritten into a self-contained question for retrieval, and the previous turns are passed to Gemini. The server keeps no conversation state; the web page sends its last 10 turns and **New chat** clears them. Each cited source carries a `url`: the GitHub page at the imported commit for repository files, or `/documents/file?uri=...` for bucket files.
+- `POST /ask`: runs the agent (see below) and returns `answer`, `sources` (each with a `url`: the GitHub page at the imported commit for repository files, or `/documents/file?uri=...` for bucket files), `steps` (the tools the agent called) and, when the agent wants to modify data, `pending_action` + `pending_description`. The optional `history` field (previous `{"role": "user"|"assistant", "content": ...}` turns, up to 20) gives the conversation memory; the server keeps no state, the web page sends its last 10 turns and **New chat** clears them. `approved_actions` carries the actions the user confirmed.
+- `POST /sharepoint/sites`: stages the supported documents of a SharePoint Online site (`{"site_url": "https://<tenant>.sharepoint.com/sites/<site>"}`); `GET /sharepoint/config` says whether SharePoint is configured.
+
+## The agent
+
+`/ask` is a tool-using agent on Gemini function calling (`backend/agent.py`). The model decides which tools to call, observes the results and continues until it can answer, within a budget of 6 steps. Tools:
+
+| Tool | Kind | What it does |
+|---|---|---|
+| `search_documents(query)` | read | Agent Search query, 5 results with snippets. The agent re-searches with other wording when results do not answer. |
+| `read_document(uri, focus)` | read | Reads the object from the bucket and returns the passages matching `focus` (the Standard edition of Agent Search only returns short snippets). |
+| `list_documents()` | read | Files, status, size and last update; for "what do we have / which is newest" questions. |
+| `github_repository_status(owner, repo)` | read | Per-file status of an imported repository. |
+| `import_github_repository(url)` | **action** | Imports a public repository's documentation. |
+| `sync_github_repositories()` | **action** | Re-imports every staged repository. |
+| `import_sharepoint_site(url)` | **action** | Imports a SharePoint site (only offered when SharePoint is configured). |
+
+Read tools run immediately. **Action** tools never run on the model's say-so: the loop stops, `/ask` returns `pending_action`, the web page shows *Action required* with Confirm/Cancel, and on Confirm it re-sends the same question with the action in `approved_actions`; only then does the tool run. Document content is passed to the model as data with an instruction not to follow anything written inside it. The UI shows the tools the agent called under each answer (*Agent steps*).
+
+### SharePoint
+
+The SharePoint import (`backend/sharepoint_import.py`) reads a site's document libraries through Microsoft Graph with an Entra ID application (client credentials) and stages supported files under `sharepoint/raw/<host>/<site>/<library>/<path>` with the same change detection and removal mirroring as GitHub. It needs `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID` and `SHAREPOINT_CLIENT_SECRET` in `.env`; until they are set the panel and the agent tool are hidden. Ask your tenant administrator for an app registration with the *application* permission `Sites.Read.All` (or `Sites.Selected` granted on the sites you need) and admin consent; a client secret is enough for the local demo. Limits: 200 files, 15 MB per file and 100 MB per import.
 - `GET /documents/file?uri=gs://...`: serves one object of the configured bucket to the local browser so citations can be opened; other buckets and unsupported types are rejected.
 - `POST /github/repositories`: stages a public GitHub repository's documentation (`{"repository_url": "https://github.com/owner/repo"}`); only changed or never-imported files are uploaded.
 - `POST /github/repositories/sync`: re-imports every staged repository and deletes files that no longer exist in it.

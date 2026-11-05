@@ -16,10 +16,9 @@ def client(monkeypatch):
 
 def test_history_turns_become_alternating_gemini_contents():
     history = [main.ChatTurn(role="user", content="¿Qué formatos acepta?"), main.ChatTurn(role="assistant", content="PDF, DOCX…")]
-    contents = main.conversation_contents(history, "Question: ¿y a qué bucket van?\n\nContext:\n…")
-    assert [c.role for c in contents] == ["user", "model", "user"]
+    contents = main.history_contents(history)
+    assert [c.role for c in contents] == ["user", "model"]
     assert contents[0].parts[0].text == "¿Qué formatos acepta?"
-    assert contents[-1].parts[0].text.startswith("Question: ¿y a qué bucket van?")
 
 
 def test_history_rejects_unknown_roles_and_too_many_turns():
@@ -29,42 +28,11 @@ def test_history_rejects_unknown_roles_and_too_many_turns():
         main.QuestionRequest(question="hola?", history=[main.ChatTurn(role="user", content="x")] * (main.MAX_HISTORY_TURNS + 1))
 
 
-class FakeModels:
-    def __init__(self, text):
-        self.text = text
-        self.calls = []
-
-    def generate_content(self, **kwargs):
-        self.calls.append(kwargs)
-        return type("R", (), {"text": self.text})()
-
-
-class FakeGenai:
-    def __init__(self, text):
-        self.models = FakeModels(text)
-
-
-def test_followup_is_rewritten_to_stand_alone():
-    client = FakeGenai("¿Cómo se configura la indexación automática del bucket?")
-    history = [main.ChatTurn(role="user", content="¿Qué es la indexación automática?"), main.ChatTurn(role="assistant", content="Es…")]
-    assert main._standalone_question(client, "gemini", history, "¿y cómo se configura?") == "¿Cómo se configura la indexación automática del bucket?"
-    assert "Latest user message: ¿y cómo se configura?" in client.models.calls[0]["contents"]
-
-
-def test_first_question_is_not_rewritten_and_rewrite_failures_fall_back():
-    client = FakeGenai("anything")
-    assert main._standalone_question(client, "gemini", [], "¿Qué formatos acepta?") == "¿Qué formatos acepta?"
-    assert client.models.calls == []
-
-    class Boom:
-        class models:  # noqa: N801
-            @staticmethod
-            def generate_content(**kwargs):
-                raise RuntimeError("quota")
-
-    history = [main.ChatTurn(role="user", content="a"), main.ChatTurn(role="assistant", content="b")]
-    assert main._standalone_question(Boom(), "gemini", history, "¿y eso?") == "¿y eso?"
-    assert main._standalone_question(FakeGenai(""), "gemini", history, "¿y eso?") == "¿y eso?"
+def test_system_instruction_covers_language_tools_and_untrusted_content():
+    text = main.SYSTEM_INSTRUCTION
+    assert "same language" in text
+    assert "search_documents" in text and "read_document" in text
+    assert "untrusted" in text
 
 
 # --- clickable sources --------------------------------------------------------
@@ -91,3 +59,41 @@ def test_file_route_only_serves_the_configured_bucket(client):
     assert client.get("/documents/file", params={"uri": "gs://other-bucket/documents/raw/a.pdf"}).status_code == 400
     assert client.get("/documents/file", params={"uri": "gs://knowledge-agent-cap/manifest/run.log"}).status_code == 415
     assert client.get("/documents/file", params={"uri": "not a uri"}).status_code == 400
+
+
+# --- toolbox wiring -----------------------------------------------------------
+
+def test_toolbox_marks_only_writing_tools_as_actions(monkeypatch):
+    monkeypatch.delenv("SHAREPOINT_CLIENT_SECRET", raising=False)
+    toolbox = main.build_toolbox(main.get_settings())
+    names = {d.name for d in toolbox.declarations()}
+    assert {"search_documents", "read_document", "list_documents", "github_repository_status", "import_github_repository", "sync_github_repositories"} <= names
+    assert "import_sharepoint_site" not in names  # hidden until SHAREPOINT_* is configured
+    assert not toolbox.get("search_documents").action
+    assert toolbox.get("import_github_repository").action and toolbox.get("sync_github_repositories").action
+
+
+def test_sharepoint_tool_appears_when_configured(monkeypatch):
+    monkeypatch.setenv("SHAREPOINT_TENANT_ID", "t")
+    monkeypatch.setenv("SHAREPOINT_CLIENT_ID", "c")
+    monkeypatch.setenv("SHAREPOINT_CLIENT_SECRET", "s")
+    toolbox = main.build_toolbox(main.get_settings())
+    assert toolbox.get("import_sharepoint_site").action
+
+
+def test_sharepoint_config_endpoint_never_leaks_the_secret(client, monkeypatch):
+    monkeypatch.delenv("SHAREPOINT_CLIENT_SECRET", raising=False)
+    assert client.get("/sharepoint/config").json() == {"configured": False, "tenant_id": None}
+    monkeypatch.setenv("SHAREPOINT_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("SHAREPOINT_CLIENT_ID", "c")
+    monkeypatch.setenv("SHAREPOINT_CLIENT_SECRET", "very-secret")
+    body = client.get("/sharepoint/config").json()
+    assert body == {"configured": True, "tenant_id": "tenant-123"}
+    assert "very-secret" not in client.get("/sharepoint/config").text
+
+
+def test_sharepoint_import_reports_not_configured(client, monkeypatch):
+    monkeypatch.delenv("SHAREPOINT_CLIENT_SECRET", raising=False)
+    response = client.post("/sharepoint/sites", json={"site_url": "https://contoso.sharepoint.com/sites/Ops"})
+    assert response.status_code == 503
+    assert "SHAREPOINT_TENANT_ID" in response.json()["detail"]

@@ -15,7 +15,7 @@ def client():
 
 
 def test_answers_follow_the_language_of_the_question():
-    assert "same language as the question" in main.SYSTEM_INSTRUCTION
+    assert "same language as the user's latest message" in main.SYSTEM_INSTRUCTION
     assert "Answer in English" not in main.SYSTEM_INSTRUCTION
 
 
