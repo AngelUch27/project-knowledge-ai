@@ -118,6 +118,17 @@ SHAREPOINT_CLIENT_SECRET=...
 
 Until then the SharePoint panel and the agent tool stay hidden. Limits: 200 files, 15 MB per file, 100 MB per import; downloads are accepted from `*.sharepoint.com` only.
 
+## Publish it for your team (Cloud Run + IAP)
+
+To use the app from any device with a link, publish it on Cloud Run behind **Identity-Aware Proxy**: the URL is public, but Google asks for a sign-in and only the accounts you allow get through. The container runs as a key-less service account with the same three roles a human user needs, scales to zero, and costs nothing while idle.
+
+```powershell
+.\scripts\deploy-app.ps1                                   # allows every @capgemini.com account
+.\scripts\deploy-app.ps1 -AllowedMembers "user:ana@example.com","user:luis@example.com"
+```
+
+The script enables the APIs, creates the `knowledge-agent-app` service account, builds the image from the `Dockerfile` with Cloud Build, deploys `knowledge-agent` with `--no-allow-unauthenticated --iap`, lets the IAP service agent invoke it, grants `roles/iap.httpsResourceAccessor` to the allowed members and prints the URL. Re-run it to deploy a new version. Inside the container `ALLOWED_HOSTS=*.run.app` replaces the loopback-only host check, the same-origin check honours `X-Forwarded-Proto`, rate limits are per signed-in user (`X-Goog-Authenticated-User-Email`) and the top bar shows who is signed in. SharePoint credentials, if you use them, belong in Secret Manager (`--set-secrets`), not in `--set-env-vars`.
+
 ## Deploy the cloud side
 
 Run once per project from the repository root; the deploying account needs to manage IAM, enable services and deploy Cloud Run functions and Eventarc (`roles/run.sourceDeveloper`, `roles/serviceusage.serviceUsageConsumer`, `roles/iam.serviceAccountUser` on the runtime service account, plus the ability to create service accounts and custom roles). A project administrator can run this with their own account.
