@@ -18,22 +18,33 @@ $storageServiceAgent = (& gcloud storage service-agent --project $ProjectId | Wh
 if (-not $storageServiceAgent) { throw "Could not determine the Cloud Storage service agent for project $ProjectId" }
 
 function Test-GcloudResource([scriptblock]$Command) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
         & $Command *> $null
         return $LASTEXITCODE -eq 0
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $previous
     }
 }
 
 function Invoke-Gcloud([string[]]$Arguments) {
+    # gcloud reports progress ("Updated IAM policy...", "Deploying function...") on stderr. When the
+    # script's output is redirected (CI, a log file), Windows PowerShell wraps each such line in an
+    # ErrorRecord, and with $ErrorActionPreference = "Stop" that would abort a successful command.
+    # Judge the command by its exit code only.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        & gcloud @Arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "gcloud command returned exit code $LASTEXITCODE"
-        }
-    } catch {
-        throw "Deployment stopped: $($_.Exception.Message)"
+        & gcloud @Arguments 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { $_ } }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($exitCode -ne 0) {
+        throw "Deployment stopped: gcloud $($Arguments[0..1] -join ' ') returned exit code $exitCode"
     }
 }
 

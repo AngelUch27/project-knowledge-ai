@@ -8,6 +8,7 @@ the passages that best match the question. Document text is treated as data.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import html
 import io
 import logging
@@ -32,20 +33,38 @@ _STOP_WORDS = {
 }
 
 
-def fetch_document_text(gcs_uri: str, project_id: str) -> str | None:
-    """Download a supported bucket object and return its plain text, or None."""
+@dataclass(frozen=True)
+class FetchedDocument:
+    text: str | None
+    metadata: dict[str, str]
+
+
+def split_gcs_uri(gcs_uri: str) -> tuple[str, str] | None:
+    """Return (bucket, object name) for a ``gs://bucket/name`` URI, else None."""
     if not gcs_uri.startswith("gs://"):
         return None
     bucket_name, _, object_name = gcs_uri[len("gs://"):].partition("/")
     if not bucket_name or not object_name:
         return None
+    return bucket_name, object_name
+
+
+def fetch_document(gcs_uri: str, project_id: str) -> FetchedDocument | None:
+    """Download a supported bucket object; return its plain text and custom metadata."""
+    parts = split_gcs_uri(gcs_uri)
+    if parts is None:
+        return None
+    bucket_name, object_name = parts
 
     client = None
     try:
         client = storage.Client(project=project_id)
         blob = client.bucket(bucket_name).get_blob(object_name)
-        if blob is None or (blob.size or 0) > MAX_SOURCE_BYTES:
+        if blob is None:
             return None
+        metadata = dict(blob.metadata or {})
+        if (blob.size or 0) > MAX_SOURCE_BYTES:
+            return FetchedDocument(text=None, metadata=metadata)
         data = blob.download_as_bytes()
     except Exception:  # noqa: BLE001 - context is best effort; the caller falls back to snippets
         logger.warning("Could not read %s for answer context", gcs_uri, exc_info=True)
@@ -58,10 +77,16 @@ def fetch_document_text(gcs_uri: str, project_id: str) -> str | None:
         text = _extract_text(PurePosixPath(object_name).suffix.lower(), data)
     except Exception:  # noqa: BLE001
         logger.warning("Could not extract text from %s", gcs_uri, exc_info=True)
-        return None
+        return FetchedDocument(text=None, metadata=metadata)
     text = re.sub(r"[ \t]+", " ", text or "")
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text[:MAX_TEXT_CHARS] or None
+    return FetchedDocument(text=text[:MAX_TEXT_CHARS] or None, metadata=metadata)
+
+
+def fetch_document_text(gcs_uri: str, project_id: str) -> str | None:
+    """Download a supported bucket object and return its plain text, or None."""
+    document = fetch_document(gcs_uri, project_id)
+    return document.text if document else None
 
 
 def _extract_text(suffix: str, data: bytes) -> str:
