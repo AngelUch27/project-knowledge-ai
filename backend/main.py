@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from backend.agent import ToolCall, ToolSpec, Toolbox, run_agent
 from backend.github_import import GitHubImportError, import_repository, sync_all_repositories
-from backend.passages import fetch_document, select_passages, split_gcs_uri
+from backend.passages import fetch_document, object_exists, select_passages, split_gcs_uri
 from backend.settings import get_settings
 from backend.sharepoint_import import SharePointImportError, SharePointSettings, import_site
 
@@ -519,6 +519,23 @@ def ask_question(request: QuestionRequest) -> QuestionResponse:
     )
 
 
+def drop_missing_results(results: list[SearchResultItem], exists) -> list[SearchResultItem]:
+    """Hide results whose object is gone from the bucket.
+
+    Agent Search's serving index lags behind document deletions (hours were
+    observed), so a deleted file can keep surfacing with stale snippets. The
+    bucket is the source of truth: a result with a gs:// URI that no longer
+    exists is dropped, and the agent sees it as not found.
+    """
+    kept = []
+    for result in results:
+        if result.uri and result.uri.startswith("gs://") and not exists(result.uri):
+            logger.info("Dropping stale search result %s (object no longer exists)", result.uri)
+            continue
+        kept.append(result)
+    return kept
+
+
 def history_contents(history: list[ChatTurn]) -> list[Content]:
     """Turn the client-side history into Gemini multi-turn contents."""
     return [
@@ -535,7 +552,10 @@ def build_toolbox(settings) -> Toolbox:
         return {"filename": title, "location": uri or title, "url": source_url(uri, metadata, bucket)}
 
     def search(args):
-        results = _search_agent_search(str(args.get("query", ""))[:2000], settings)
+        results = drop_missing_results(
+            _search_agent_search(str(args.get("query", ""))[:2000], settings),
+            lambda uri: object_exists(uri, settings.project_id),
+        )
         return {
             "results": [{"title": r.title, "uri": r.uri, "snippets": r.snippets} for r in results],
             "summary": f"search_documents({args.get('query')!r}) → {len(results)} results",

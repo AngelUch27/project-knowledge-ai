@@ -61,6 +61,18 @@ def test_file_route_only_serves_the_configured_bucket(client):
     assert client.get("/documents/file", params={"uri": "not a uri"}).status_code == 400
 
 
+# --- stale search results -----------------------------------------------------
+
+def test_search_results_whose_object_is_gone_are_dropped():
+    results = [
+        main.SearchResultItem(document_id="1", title="Deleted", uri="gs://b/github/raw/x/old.md", snippets=["stale"]),
+        main.SearchResultItem(document_id="2", title="Alive", uri="gs://b/documents/raw/sop.docx", snippets=["ok"]),
+        main.SearchResultItem(document_id="3", title="No URI", uri=None, snippets=[]),
+    ]
+    kept = main.drop_missing_results(results, exists=lambda uri: uri.endswith("sop.docx"))
+    assert [r.title for r in kept] == ["Alive", "No URI"]
+
+
 # --- toolbox wiring -----------------------------------------------------------
 
 def test_toolbox_marks_only_writing_tools_as_actions(monkeypatch):

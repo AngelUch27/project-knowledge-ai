@@ -83,6 +83,23 @@ def fetch_document(gcs_uri: str, project_id: str) -> FetchedDocument | None:
     return FetchedDocument(text=text[:MAX_TEXT_CHARS] or None, metadata=metadata)
 
 
+def object_exists(gcs_uri: str, project_id: str) -> bool:
+    """True when the object is still in the bucket; on any error assume it exists."""
+    parts = split_gcs_uri(gcs_uri)
+    if parts is None:
+        return False
+    client = None
+    try:
+        client = storage.Client(project=project_id)
+        return client.bucket(parts[0]).get_blob(parts[1]) is not None
+    except Exception:  # noqa: BLE001 - never hide a result because of a transient error
+        logger.warning("Could not check whether %s exists", gcs_uri, exc_info=True)
+        return True
+    finally:
+        if client is not None:
+            client.close()
+
+
 def fetch_document_text(gcs_uri: str, project_id: str) -> str | None:
     """Download a supported bucket object and return its plain text, or None."""
     document = fetch_document(gcs_uri, project_id)
