@@ -84,6 +84,8 @@ DEFAULT_POLICIES: dict[str, tuple[Window, ...]] = {
     "import": (Window(_env_int("RATE_LIMIT_IMPORTS_PER_HOUR", 60), 3600),),
     # file uploads
     "upload": (Window(_env_int("RATE_LIMIT_UPLOADS_PER_MINUTE", 100), 60), Window(_env_int("RATE_LIMIT_UPLOADS_PER_HOUR", 1000), 3600)),
+    # deletions: each one removes a file from the bucket and, through the trigger, from the index
+    "delete": (Window(_env_int("RATE_LIMIT_DELETES_PER_MINUTE", 30), 60), Window(_env_int("RATE_LIMIT_DELETES_PER_HOUR", 300), 3600)),
 }
 
 

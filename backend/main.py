@@ -651,6 +651,16 @@ def build_toolbox(settings) -> Toolbox:
             "summary": f"sync_github_repositories() → {len(outcome.results)} synced, {len(outcome.failures)} failed",
         }
 
+    def delete_doc(args):
+        decision = LIMITER.check("delete")
+        if not decision.allowed:
+            return {"error": f"Delete budget exhausted: {decision.used}/{decision.limit} this {decision.window}; retry in {decision.retry_after} s."}
+        try:
+            payload = delete_knowledge_base_object(str(args.get("uri", "")), settings)
+        except HTTPException as exc:
+            return {"error": exc.detail}
+        return {**payload, "summary": f"delete_document({payload['filename']}) → deleted from the bucket; the index follows within a minute"}
+
     def sharepoint(args):
         if blocked := _import_budget():
             return blocked
@@ -671,6 +681,9 @@ def build_toolbox(settings) -> Toolbox:
                  action=True, confirm_text=lambda a: f"Import the GitHub repository {a.get('repository_url')} into the knowledge base"),
         ToolSpec("sync_github_repositories", "Re-import every GitHub repository already in the knowledge base, picking up changed and removed files. Modifies data; the user confirms before it runs.",
                  {"type": "object", "properties": {}}, github_sync, action=True, confirm_text=lambda a: "Re-sync every imported GitHub repository"),
+        ToolSpec("delete_document", "Delete one document from the knowledge base (bucket and search index). Use the gs:// URI from list_documents or search_documents. Modifies data; the user confirms before it runs.",
+                 {"type": "object", "properties": {"uri": {"type": "string", "description": "The gs:// URI of the document"}}, "required": ["uri"]}, delete_doc,
+                 action=True, confirm_text=lambda a: f"Delete {a.get('uri')} from the knowledge base (recoverable for 7 days)"),
     ]
     if SharePointSettings.from_env().configured:
         specs.append(
@@ -689,6 +702,51 @@ def source_url(uri: str | None, metadata: dict[str, str], bucket_name: str) -> s
     if parts is None or parts[0] != bucket_name or Path(parts[1]).suffix.lower() not in SUPPORTED_TYPES:
         return None
     return f"/documents/file?uri={quote(uri, safe='')}"
+
+
+def _knowledge_base_object(uri: str, settings) -> tuple[str, str]:
+    """Validate that `uri` names a supported document of the configured bucket; return (bucket, name)."""
+    parts = split_gcs_uri(uri)
+    if parts is None or parts[0] != settings.gcs_bucket:
+        raise HTTPException(status_code=400, detail="Only objects of the configured bucket can be used.")
+    if Path(parts[1]).suffix.lower() not in SUPPORTED_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type.")
+    return parts
+
+
+def delete_knowledge_base_object(uri: str, settings) -> dict[str, str]:
+    """Delete one document from the bucket. The object.deleted trigger removes it from the index.
+
+    The bucket keeps soft-deleted objects for 7 days, so an accidental deletion can be restored
+    with `gcloud storage restore`.
+    """
+    bucket_name, object_name = _knowledge_base_object(uri, settings)
+    client = None
+    try:
+        client = storage.Client(project=settings.project_id)
+        blob = client.bucket(bucket_name).get_blob(object_name)
+        if blob is None:
+            raise HTTPException(status_code=404, detail="The document no longer exists in the bucket.")
+        filename = (blob.metadata or {}).get("original_filename") or Path(object_name).name
+        blob.delete()
+    except HTTPException:
+        raise
+    except google.auth.exceptions.GoogleAuthError as exc:
+        raise HTTPException(status_code=503, detail="No valid Application Default Credentials were found for GCP.") from exc
+    except GoogleAPIError as exc:
+        logger.exception("Deleting %s failed", uri)
+        raise HTTPException(status_code=502, detail="Cloud Storage could not delete the document.") from exc
+    finally:
+        if client is not None:
+            client.close()
+    logger.info("Deleted %s (%s); the delete trigger removes it from the index", uri, filename)
+    return {"deleted": uri, "filename": filename, "status": "deleted"}
+
+
+@app.delete("/documents")
+def delete_document(uri: str = Query(min_length=6, max_length=1024), _: Decision = Depends(rate_limited("delete"))) -> dict[str, str]:
+    """Delete one document of the knowledge base (bucket + index via the delete trigger)."""
+    return delete_knowledge_base_object(uri, _require_gcp_settings())
 
 
 @app.get("/documents/file", include_in_schema=False)
