@@ -49,6 +49,12 @@ Open `http://127.0.0.1:8000`. The server binds to `127.0.0.1`, so it accepts con
 
 The Documents tab uploads files to `knowledge-agent-cap` under `documents/raw/`. Other bucket prefixes are watched as well. For each supported object that is finalized, an Eventarc-triggered Cloud Run function calls `ImportDocuments` with that object's exact URI and incremental mode. Supported formats are PDF, DOCX, PPTX, XLSX, XLSM, TXT, MD, HTML, and JSON. Ingestion status and messages are stored in object metadata and shown in Documents and Activity. Unsupported file types are ignored.
 
+Deleting an object from the bucket also removes it from the search index: a second function, `knowledge-agent-gcs-delete`, listens for `object.deleted` events and deletes the matching Agent Search document. Overwrites emit a delete for the previous generation too; the function detects that the object still exists and keeps the index entry, which the new generation's finalize event re-imports.
+
+### GitHub repositories
+
+The Documents tab can import a public GitHub repository from its URL. The root `README.md` and every Markdown file under `docs/` are staged under `github/raw/<owner>/<repo>/` and indexed by the same trigger. **Sync all** re-imports every staged repository: files whose content is unchanged and already imported are skipped, changed files are re-uploaded (which re-indexes them), and files removed from the repository are deleted from the bucket and, through the delete trigger, from the index. A Cloud Scheduler job (`knowledge-agent-github-sync`, daily at 06:00 America/Mexico_City by default) runs the same sync through the private HTTP function of the same name.
+
 ## Deploy automatic ingestion to GCP
 
 Run this once per project from the repository root. The deploying account needs permissions to manage IAM, enable services, and deploy Cloud Run Functions and Eventarc. In particular, it needs `roles/run.sourceDeveloper`, `roles/serviceusage.serviceUsageConsumer`, and `roles/iam.serviceAccountUser` on the runtime service account. It must also be able to create service accounts and service agent roles and modify IAM policies. A GCP project administrator can run these steps using their own account. See Google's [Cloud Run functions deployment permissions](https://cloud.google.com/run/docs/deploy-functions).
@@ -70,7 +76,7 @@ gcloud iam service-accounts add-iam-policy-binding $serviceAccount --member="use
 gcloud functions describe knowledge-agent-gcs-import --gen2 --region us-central1 --project $project --format="value(state)"
 ```
 
-The final command should show `ACTIVE`. The script enables APIs and deploys `knowledge-agent-gcs-import` using a service account **without a key**. It limits Agent Search imports to the configured data store and metadata updates to the bucket. If required by your organization policy, a project administrator must also grant `roles/run.builder` to the Cloud Build service account specified by Google Cloud.
+The final command should show `ACTIVE`. The script enables APIs and deploys three functions using a service account **without a key**: `knowledge-agent-gcs-import` (finalize → import), `knowledge-agent-gcs-delete` (delete → remove from index) and `knowledge-agent-github-sync` (HTTP, called by the Cloud Scheduler job it also creates; `-SyncSchedule` and `-SyncTimeZone` override the default). The service account gets a custom role limited to importing, listing and deleting Agent Search documents, metadata access on the bucket's objects, and object create/delete on that bucket for the GitHub sync. Agent Search does not evaluate IAM conditions, so the Discovery Engine role is granted unconditionally; Cloud Run invoker is granted per service rather than at project level for the same reason. If required by your organization policy, a project administrator must also grant `roles/run.builder` to the Cloud Build service account specified by Google Cloud.
 
 If these commands return `PERMISSION_DENIED`, the active account does not have enough permissions; ask a project administrator to grant them. Users who only run the local app do not need deployment permissions.
 
@@ -84,7 +90,10 @@ Objects that existed before the trigger was created do not produce retroactive e
 - `GET /documents`: lists up to 1,000 supported bucket files and their ingestion metadata. This limit only applies to the UI list; questions search the corpus indexed by Agent Search.
 - `POST /documents`: uploads one file to the bucket. The UI accepts files up to 15 MB each.
 - `POST /search`: queries the configured Search App.
-- `POST /ask`: retrieves the five most relevant results from the indexed corpus and generates an answer with Gemini. Gemini does not read all 1,000 documents for every question; Agent Search retrieves the most relevant content.
+- `POST /ask`: retrieves the five most relevant results from the indexed corpus, reads those objects from the bucket to extract the passages that best match the question (the Standard edition of Agent Search only returns short snippets), and generates an answer with Gemini in the language of the question. Gemini does not read all 1,000 documents for every question; Agent Search retrieves the most relevant content.
+- `POST /github/repositories`: stages a public GitHub repository's documentation (`{"repository_url": "https://github.com/owner/repo"}`); only changed or never-imported files are uploaded.
+- `POST /github/repositories/sync`: re-imports every staged repository and deletes files that no longer exist in it.
+- `GET /github/repositories/{owner}/{repo}/status`: per-file ingestion status of one staged repository.
 - `/docs`: interactive FastAPI documentation, accessible locally only.
 
 The `.env` variables are `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCS_BUCKET`, `GEMINI_MODEL`, `AGENT_SEARCH_LOCATION`, `AGENT_SEARCH_APP_ID`, `AGENT_SEARCH_SERVING_CONFIG`, and `AGENT_SEARCH_DATA_STORE_ID`. Application Default Credentials provide authentication. Never commit tokens, keys, or documents to Git.

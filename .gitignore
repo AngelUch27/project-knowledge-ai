@@ -9,6 +9,9 @@ __pycache__/
 venv/
 env/
 
+# Copied from backend/ by scripts/deploy-ingestion.ps1 at deploy time
+ingestion/github_import.py
+
 # Local configuration and secrets
 .env
 .env.*

@@ -8,7 +8,10 @@ uses the existing bucket-finalize event path into Agent Search.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import hashlib
+import logging
 from pathlib import PurePosixPath
 import re
 from typing import Any
@@ -17,6 +20,9 @@ from urllib.parse import quote, unquote, urlsplit
 import requests
 from google.cloud import storage
 
+logger = logging.getLogger(__name__)
+
+GITHUB_PREFIX = "github/raw/"
 
 GITHUB_API_ROOT = "https://api.github.com"
 GITHUB_RAW_ROOT = "https://raw.githubusercontent.com"
@@ -47,6 +53,39 @@ class RepositoryImportResult:
     total_bytes: int
     missing_paths: tuple[str, ...]
     gcs_uris: tuple[str, ...]
+    unchanged_documents: int = 0
+    removed_documents: int = 0
+    removed_uris: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExistingObject:
+    """What the bucket already holds for one object name of a repository prefix."""
+
+    name: str
+    md5_base64: str | None
+    ingestion_status: str | None
+
+
+@dataclass(frozen=True)
+class ChangePlan:
+    """Object names to upload, leave alone, or delete for one repository."""
+
+    upload: tuple[str, ...]
+    unchanged: tuple[str, ...]
+    delete: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SyncFailure:
+    repository: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class SyncOutcome:
+    results: tuple[RepositoryImportResult, ...]
+    failures: tuple[SyncFailure, ...]
 
 
 @dataclass(frozen=True)
@@ -307,11 +346,109 @@ def _download_file(
     return content
 
 
-def _gcs_object_name(repository: _Repository, path: str) -> str:
-    """Build a stable key; repeated imports replace the same repository file."""
+def _repository_prefix(repository: _Repository) -> str:
     # GitHub repository names are case-insensitive. Normalize only the owner
     # and repository components while preserving the actual document path.
-    return f"github/raw/{repository.owner.lower()}/{repository.name.lower()}/{path}"
+    return f"{GITHUB_PREFIX}{repository.owner.lower()}/{repository.name.lower()}/"
+
+
+def _gcs_object_name(repository: _Repository, path: str) -> str:
+    """Build a stable key; repeated imports replace the same repository file."""
+    return f"{_repository_prefix(repository)}{path}"
+
+
+def content_md5_base64(content: bytes) -> str:
+    """MD5 of the content in the base64 form Cloud Storage reports as ``md5_hash``."""
+    return base64.b64encode(hashlib.md5(content).digest()).decode("ascii")
+
+
+def plan_changes(desired: dict[str, bytes], existing: dict[str, ExistingObject]) -> ChangePlan:
+    """Decide what to upload, keep, or delete so the bucket mirrors ``desired``.
+
+    ``desired`` maps object names to the content fetched from GitHub; ``existing``
+    maps object names already under the repository prefix to what the bucket
+    holds. A file is left alone only when its bytes are identical *and* its last
+    import succeeded, so a file whose ingestion failed is re-uploaded and
+    re-triggered. Objects no longer in the repository are deleted; the bucket's
+    delete trigger then removes them from the search index.
+    """
+    upload, unchanged = [], []
+    for name in sorted(desired):
+        current = existing.get(name)
+        if (
+            current is not None
+            and current.md5_base64 == content_md5_base64(desired[name])
+            and current.ingestion_status == "imported"
+        ):
+            unchanged.append(name)
+        else:
+            upload.append(name)
+    delete = sorted(name for name in existing if name not in desired)
+    return ChangePlan(upload=tuple(upload), unchanged=tuple(unchanged), delete=tuple(delete))
+
+
+def _existing_objects(bucket: storage.Bucket, prefix: str) -> dict[str, ExistingObject]:
+    existing = {}
+    for blob in bucket.client.list_blobs(bucket.name, prefix=prefix):
+        metadata = blob.metadata or {}
+        existing[blob.name] = ExistingObject(
+            name=blob.name,
+            md5_base64=blob.md5_hash,
+            ingestion_status=metadata.get("ingestion_status"),
+        )
+    return existing
+
+
+def list_staged_repositories(bucket_name: str, *, storage_client: storage.Client | None = None) -> list[str]:
+    """Return the canonical ``owner/name`` of every repository staged in the bucket."""
+    owns_client = storage_client is None
+    gcs = storage_client or storage.Client()
+    try:
+        repositories: dict[str, str] = {}
+        for blob in gcs.list_blobs(bucket_name, prefix=GITHUB_PREFIX):
+            parts = blob.name[len(GITHUB_PREFIX):].split("/")
+            if len(parts) < 3 or not parts[0] or not parts[1]:
+                continue
+            key = f"{parts[0]}/{parts[1]}".lower()
+            canonical = (blob.metadata or {}).get("repository") or key
+            repositories.setdefault(key, canonical)
+        return [repositories[key] for key in sorted(repositories)]
+    finally:
+        if owns_client:
+            gcs.close()
+
+
+def sync_all_repositories(
+    bucket_name: str,
+    *,
+    session: requests.Session | None = None,
+    storage_client: storage.Client | None = None,
+) -> SyncOutcome:
+    """Re-import every staged repository; one failing repository does not stop the rest."""
+    owns_session = session is None
+    http = session or _new_session()
+    owns_client = storage_client is None
+    gcs = storage_client or storage.Client()
+    results, failures = [], []
+    try:
+        for repository in list_staged_repositories(bucket_name, storage_client=gcs):
+            try:
+                results.append(
+                    import_repository(
+                        f"https://github.com/{repository}", bucket_name, session=http, storage_client=gcs
+                    )
+                )
+            except GitHubImportError as exc:
+                failures.append(SyncFailure(repository=repository, detail=exc.detail))
+            except Exception as exc:  # noqa: BLE001 - keep syncing the other repositories
+                logger.exception("Unexpected failure syncing %s", repository)
+                failures.append(SyncFailure(repository=repository, detail=f"Unexpected error ({type(exc).__name__})."))
+    finally:
+        if owns_session:
+            http.close()
+        if owns_client:
+            gcs.close()
+    return SyncOutcome(results=tuple(results), failures=tuple(failures))
 
 
 def import_repository(
@@ -364,12 +501,16 @@ def import_repository(
                 raise GitHubImportError(413, "The selected repository documentation exceeds the 10 MB total limit.")
             files.append(_SelectedFile(path=path, content=content))
 
+        removed_uris: list[str] = []
         try:
             if gcs is None:
                 gcs = storage.Client()
             bucket = gcs.bucket(bucket_name)
-            for document in files:
-                object_name = _gcs_object_name(repository, document.path)
+            desired = {_gcs_object_name(repository, document.path): document.content for document in files}
+            plan = plan_changes(desired, _existing_objects(bucket, _repository_prefix(repository)))
+            by_name = {_gcs_object_name(repository, document.path): document for document in files}
+            for object_name in plan.upload:
+                document = by_name[object_name]
                 blob = bucket.blob(object_name)
                 blob.metadata = {
                     "source_type": "github",
@@ -389,6 +530,11 @@ def import_repository(
                 # generation and causes the existing finalize trigger to run.
                 blob.upload_from_string(document.content, content_type="text/markdown; charset=utf-8")
                 staged_uris.append(f"gs://{bucket_name}/{object_name}")
+            for object_name in plan.delete:
+                # Deleting the object emits an object.deleted event; the ingestion
+                # function removes the matching document from the search index.
+                bucket.blob(object_name).delete()
+                removed_uris.append(f"gs://{bucket_name}/{object_name}")
         except GitHubImportError:
             raise
         except Exception as exc:
@@ -400,10 +546,13 @@ def import_repository(
         return RepositoryImportResult(
             repository=repository.canonical_name,
             commit_sha=commit_sha,
-            staged_documents=len(files),
+            staged_documents=len(staged_uris),
             total_bytes=total_bytes,
             missing_paths=missing_paths,
             gcs_uris=tuple(staged_uris),
+            unchanged_documents=len(plan.unchanged),
+            removed_documents=len(removed_uris),
+            removed_uris=tuple(removed_uris),
         )
     finally:
         if owns_session:
