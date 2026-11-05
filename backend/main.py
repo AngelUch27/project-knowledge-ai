@@ -18,6 +18,7 @@ from google.genai.types import GenerateContentConfig, HttpOptions
 from pydantic import BaseModel, Field
 
 from backend.github_import import GitHubImportError, import_repository
+from backend.passages import fetch_document_text, select_passages
 from backend.settings import get_settings
 
 app = FastAPI(
@@ -39,6 +40,7 @@ async def restrict_browser_origin(request, call_next):
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_LISTED_DOCUMENTS = 1000
+MAX_CONTEXT_CHARS_PER_SOURCE = 6000
 GITHUB_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -236,6 +238,16 @@ def github_repository_status(owner: str, repo: str) -> dict[str, object]:
             client.close()
 
 
+def _derived_texts(derived, field: str, key: str) -> list[str]:
+    """Collect the non-empty `key` strings from a list field of derived_struct_data."""
+    texts = []
+    for item in derived.get(field, []) or []:
+        value = item.get(key) if hasattr(item, "get") else None
+        if value:
+            texts.append(str(value).strip())
+    return texts
+
+
 def _search_agent_search(query: str, settings) -> list[SearchResultItem]:
     client_options = (
         ClientOptions(api_endpoint=f"{settings.agent_search_location}-discoveryengine.googleapis.com")
@@ -256,9 +268,12 @@ def _search_agent_search(query: str, settings) -> list[SearchResultItem]:
                 query=query,
                 page_size=5,
                 content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                    # Extractive segments/answers need the Enterprise edition of the
+                    # search app; the Standard edition only returns short snippets.
+                    # /ask builds fuller context by reading the retrieved objects.
                     snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
                         return_snippet=True
-                    )
+                    ),
                 ),
             )
         )
@@ -266,17 +281,12 @@ def _search_agent_search(query: str, settings) -> list[SearchResultItem]:
         for result in response:
             document = result.document
             derived = document.derived_struct_data or {}
-            snippets = []
-            for item in derived.get("snippets", []):
-                snippet = item.get("snippet") if hasattr(item, "get") else None
-                if snippet:
-                    snippets.append(str(snippet))
             results.append(
                 SearchResultItem(
                     document_id=document.id,
                     title=derived.get("title") or document.id,
                     uri=derived.get("link") or derived.get("uri"),
-                    snippets=snippets,
+                    snippets=_derived_texts(derived, "snippets", "snippet"),
                 )
             )
         return results
@@ -354,10 +364,15 @@ def ask_question(request: QuestionRequest) -> QuestionResponse:
     context_parts = []
     source_references = []
     for result in search_results:
-        snippets = result.snippets or ["Sin fragmento disponible."]
+        passages = []
+        if result.uri:
+            text = fetch_document_text(result.uri, settings.project_id)
+            if text:
+                passages = select_passages(text, request.question, MAX_CONTEXT_CHARS_PER_SOURCE)
+        passages = passages or result.snippets or ["No passage available."]
+        body = "\n\n".join(passages)[:MAX_CONTEXT_CHARS_PER_SOURCE]
         context_parts.append(
-            f"[Source: {result.title}; URI: {result.uri or 'not available'}]\n"
-            + "\n".join(snippets)
+            f"[Source: {result.title}; URI: {result.uri or 'not available'}]\n{body}"
         )
         source_references.append(
             SourceReference(filename=result.title, location=result.uri or result.document_id)
