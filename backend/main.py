@@ -11,7 +11,7 @@ from datetime import timezone
 import google.auth.exceptions
 from google.api_core.client_options import ClientOptions
 from google.cloud import discoveryengine_v1 as discoveryengine
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from google import genai
@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from backend.agent import ToolCall, ToolSpec, Toolbox, run_agent
 from backend.github_import import GitHubImportError, import_repository, sync_all_repositories
 from backend.passages import fetch_document, object_exists, select_passages, split_gcs_uri
+from backend.ratelimit import Decision, SlidingWindowLimiter
 from backend.settings import get_settings
 from backend.sharepoint_import import SharePointImportError, SharePointSettings, import_site
 
@@ -60,6 +61,28 @@ SYSTEM_INSTRUCTION = (
     "tool directly; the system asks the user to confirm before it runs, and after it runs report the result briefly."
 )
 logger = logging.getLogger(__name__)
+LIMITER = SlidingWindowLimiter()
+
+
+def rate_limited(policy: str):
+    """FastAPI dependency: enforce one limiter policy per client and expose the usage headers."""
+
+    def dependency(request: Request, response: Response) -> Decision:
+        key = request.client.host if request.client else "local"
+        decision = LIMITER.check(policy, key)
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Rate limit reached: {decision.used}/{decision.limit} {policy} requests this {decision.window}. "
+                    f"Try again in {decision.retry_after} s."
+                ),
+                headers=decision.headers(),
+            )
+        response.headers.update(decision.headers())
+        return decision
+
+    return dependency
 GITHUB_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -113,6 +136,8 @@ class QuestionResponse(BaseModel):
     # Set when the agent wants to run a data-modifying tool: re-send the question with it in approved_actions.
     pending_action: ActionCall | None = None
     pending_description: str | None = None
+    # Current consumption of the question budget; `warning` is true from 80 % on.
+    usage: dict[str, object] | None = None
 
 
 class SharePointSiteRequest(BaseModel):
@@ -169,8 +194,14 @@ def frontend() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.get("/usage")
+def usage(request: Request) -> dict[str, object]:
+    """Current consumption of every rate-limit policy for this client (reading records nothing)."""
+    return {"policies": LIMITER.snapshot(request.client.host if request.client else "local")}
+
+
 @app.post("/search", response_model=SearchResponse)
-def search_documents(request: SearchQueryRequest) -> SearchResponse:
+def search_documents(request: SearchQueryRequest, _: Decision = Depends(rate_limited("search"))) -> SearchResponse:
     """Search the configured Agent Search app using local Application Default Credentials."""
     settings = get_settings()
     missing = settings.missing_agent_search_values()
@@ -223,7 +254,7 @@ def list_documents() -> list[StoredDocument]:
 
 
 @app.post("/github/repositories", status_code=202)
-def import_github_repository(request: GitHubRepositoryRequest) -> dict[str, str | int]:
+def import_github_repository(request: GitHubRepositoryRequest, _: Decision = Depends(rate_limited("import"))) -> dict[str, str | int]:
     """Stage public GitHub documentation; Cloud Storage ingestion is asynchronous."""
     settings = _require_gcp_settings()
     try:
@@ -253,7 +284,7 @@ def _import_result_payload(result) -> dict[str, str | int]:
 
 
 @app.post("/github/repositories/sync")
-def sync_github_repositories() -> dict[str, object]:
+def sync_github_repositories(_: Decision = Depends(rate_limited("import"))) -> dict[str, object]:
     """Re-import every repository already staged in the bucket.
 
     Changed files are re-uploaded (which re-triggers indexing), unchanged files are
@@ -285,7 +316,7 @@ def sharepoint_config() -> dict[str, object]:
 
 
 @app.post("/sharepoint/sites", status_code=202)
-def import_sharepoint_site(request: SharePointSiteRequest) -> dict[str, object]:
+def import_sharepoint_site(request: SharePointSiteRequest, _: Decision = Depends(rate_limited("import"))) -> dict[str, object]:
     """Stage the supported documents of a SharePoint Online site; indexing is asynchronous."""
     settings = _require_gcp_settings()
     try:
@@ -421,7 +452,7 @@ def _search_agent_search(query: str, settings) -> list[SearchResultItem]:
 
 
 @app.post("/documents", status_code=201)
-def upload_document(file: UploadFile = File(...)) -> dict[str, str]:
+def upload_document(file: UploadFile = File(...), _: Decision = Depends(rate_limited("upload"))) -> dict[str, str]:
     filename = Path(file.filename or "").name
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_TYPES:
@@ -471,7 +502,7 @@ def upload_document(file: UploadFile = File(...)) -> dict[str, str]:
 
 
 @app.post("/ask", response_model=QuestionResponse)
-def ask_question(request: QuestionRequest) -> QuestionResponse:
+def ask_question(request: QuestionRequest, limit: Decision = Depends(rate_limited("ask"))) -> QuestionResponse:
     settings = get_settings()
     missing = settings.missing_agent_search_values()
     if missing:
@@ -516,6 +547,7 @@ def ask_question(request: QuestionRequest) -> QuestionResponse:
         steps=[AgentStepOut(tool=s.tool, args=s.args, summary=s.summary) for s in result.steps],
         pending_action=ActionCall(name=result.pending_action.name, args=result.pending_action.args) if result.pending_action else None,
         pending_description=result.pending_description,
+        usage=limit.usage(),
     )
 
 
@@ -596,11 +628,22 @@ def build_toolbox(settings) -> Toolbox:
         payload = github_repository_status(str(args.get("owner", "")), str(args.get("repo", "")))
         return {**payload, "summary": f"github_repository_status({payload['repository']}) → {payload['staged_documents']} files"}
 
+    def _import_budget():
+        """Agent-triggered imports count against the same budget as the Documents panel."""
+        decision = LIMITER.check("import")
+        if not decision.allowed:
+            return {"error": f"Import budget exhausted: {decision.used}/{decision.limit} this {decision.window}; retry in {decision.retry_after} s."}
+        return None
+
     def github_import(args):
+        if blocked := _import_budget():
+            return blocked
         payload = _import_result_payload(import_repository(str(args.get("repository_url", "")), bucket))
         return {**payload, "summary": f"import_github_repository({payload['repository']}) → {payload['staged_documents']} staged, {payload['unchanged_documents']} unchanged, {payload['removed_documents']} removed"}
 
     def github_sync(args):
+        if blocked := _import_budget():
+            return blocked
         outcome = sync_all_repositories(bucket)
         return {
             "synced": [_import_result_payload(r) for r in outcome.results],
@@ -609,6 +652,8 @@ def build_toolbox(settings) -> Toolbox:
         }
 
     def sharepoint(args):
+        if blocked := _import_budget():
+            return blocked
         result = import_site(str(args.get("site_url", "")), bucket, SharePointSettings.from_env())
         return {**_site_result_payload(result), "summary": f"import_sharepoint_site({result.site}) → {result.staged_documents} staged, {result.unchanged_documents} unchanged, {result.removed_documents} removed"}
 
