@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 import re
 from typing import Literal
@@ -33,37 +32,17 @@ app = FastAPI(
     description="Document Q&A API with Cloud Storage and Gemini on Vertex AI.",
     version="0.2.0",
 )
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(name)s: %(message)s")
-
-# Locally only loopback hosts are accepted. On Cloud Run the deploy script sets
-# ALLOWED_HOSTS to the service's domain (wildcards such as *.run.app are allowed).
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
-IAP_USER_HEADER = "x-goog-authenticated-user-email"
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 
 @app.middleware("http")
 async def restrict_browser_origin(request, call_next):
     origin = request.headers.get("origin")
     if origin:
-        # Behind Cloud Run's proxy the app sees http while the browser used https.
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-        expected_origin = f"{scheme}://{request.headers.get('host', '')}"
+        expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
         if origin.rstrip("/") != expected_origin:
             return JSONResponse(status_code=403, content={"detail": "Origin not allowed."})
     return await call_next(request)
-
-
-def current_user(request: Request) -> str | None:
-    """The signed-in user when running behind Identity-Aware Proxy; None locally."""
-    value = request.headers.get(IAP_USER_HEADER, "")
-    # IAP sends "accounts.google.com:user@example.com"
-    return value.split(":", 1)[-1] or None
-
-
-def client_key(request: Request) -> str:
-    """Rate limits are per signed-in user behind IAP, per client address otherwise."""
-    return current_user(request) or (request.client.host if request.client else "local")
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_LISTED_DOCUMENTS = 1000
@@ -89,7 +68,8 @@ def rate_limited(policy: str):
     """FastAPI dependency: enforce one limiter policy per client and expose the usage headers."""
 
     def dependency(request: Request, response: Response) -> Decision:
-        decision = LIMITER.check(policy, client_key(request))
+        key = request.client.host if request.client else "local"
+        decision = LIMITER.check(policy, key)
         if not decision.allowed:
             raise HTTPException(
                 status_code=429,
@@ -217,14 +197,7 @@ def frontend() -> FileResponse:
 @app.get("/usage")
 def usage(request: Request) -> dict[str, object]:
     """Current consumption of every rate-limit policy for this client (reading records nothing)."""
-    return {"policies": LIMITER.snapshot(client_key(request))}
-
-
-@app.get("/me")
-def me(request: Request) -> dict[str, object]:
-    """Who is using the app: the IAP identity on Cloud Run, or local mode."""
-    user = current_user(request)
-    return {"user": user, "mode": "cloud" if user else "local"}
+    return {"policies": LIMITER.snapshot(request.client.host if request.client else "local")}
 
 
 @app.post("/search", response_model=SearchResponse)

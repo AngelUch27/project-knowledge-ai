@@ -275,7 +275,7 @@
         <div class="crumb">Project Knowledge AI <span aria-hidden="true">/</span> <strong id="crumb">Chat</strong></div>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="subtle mobile-theme" id="theme-toggle-mobile" type="button" aria-label="Toggle appearance">◐</button>
-          <div class="pill" id="mode-pill" title="Where the app is running"><span class="dot" aria-hidden="true"></span><span id="mode-label">Local API</span></div>
+          <div class="pill"><span class="dot" aria-hidden="true"></span>Local API</div>
         </div>
       </header>
       <div class="content">
@@ -382,7 +382,6 @@
     function toggleTheme(){const next=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('theme',next)}catch(e){}applyTheme()}
     $('#theme-toggle').addEventListener('click',toggleTheme);$('#theme-toggle-mobile').addEventListener('click',toggleTheme);themeMedia.addEventListener('change',applyTheme);applyTheme();
 
-    (async()=>{try{const r=await fetch('/me');const m=await r.json();if(m.user){$('#mode-label').textContent=m.user;$('#mode-pill').title='Signed in through Identity-Aware Proxy';$$('.secure-note').forEach(n=>n.innerHTML='<b><span class="dot" aria-hidden="true"></span>Team deployment</b>Access is limited to authorized Google accounts through Identity-Aware Proxy.')}}catch(e){}})();
     /* Navigation */
     function setPage(name){$$('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('#crumb').textContent={chat:'Chat',documents:'Documents',activity:'Activity'}[name];if(name==='documents'||name==='activity')loadDocuments();if(name==='chat')setTimeout(()=>$('#question').focus(),50)}
     $$('.nav button').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
