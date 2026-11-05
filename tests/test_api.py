@@ -69,31 +69,3 @@ def test_sync_endpoint_logs_the_real_error_behind_a_generic_502(client, monkeypa
 def test_requests_from_other_origins_are_rejected(client):
     response = client.get("/health", headers={"Origin": "https://evil.example"})
     assert response.status_code == 403
-
-
-def test_same_origin_behind_a_tls_proxy_is_accepted(client):
-    # Cloud Run terminates TLS: the browser's Origin is https while the app sees http.
-    response = client.get("/health", headers={"Origin": "https://localhost", "X-Forwarded-Proto": "https"})
-    assert response.status_code == 200
-    assert client.get("/health", headers={"Origin": "https://localhost"}).status_code == 403
-
-
-def test_me_reports_the_iap_identity_or_local_mode(client):
-    assert client.get("/me").json() == {"user": None, "mode": "local"}
-    body = client.get("/me", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:ana@example.com"}).json()
-    assert body == {"user": "ana@example.com", "mode": "cloud"}
-
-
-def test_rate_limits_are_per_iap_user_when_signed_in(client, monkeypatch):
-    from backend.ratelimit import SlidingWindowLimiter, Window
-
-    monkeypatch.setenv("GCP_PROJECT_ID", "p")
-    monkeypatch.setenv("GCS_BUCKET", "b")
-    monkeypatch.setattr(main, "LIMITER", SlidingWindowLimiter({"ask": (Window(1, 60),)}))
-    monkeypatch.setattr(main, "run_agent", lambda *a, **k: type("R", (), {"answer": "ok", "steps": [], "sources": [], "pending_action": None, "pending_description": None})())
-    monkeypatch.setattr(main.genai, "Client", lambda **k: type("C", (), {"close": lambda self: None})())
-    ana = {"X-Goog-Authenticated-User-Email": "accounts.google.com:ana@example.com"}
-    luis = {"X-Goog-Authenticated-User-Email": "accounts.google.com:luis@example.com"}
-    assert client.post("/ask", json={"question": "hello there"}, headers=ana).status_code == 200
-    assert client.post("/ask", json={"question": "hello there"}, headers=ana).status_code == 429
-    assert client.post("/ask", json={"question": "hello there"}, headers=luis).status_code == 200  # own budget

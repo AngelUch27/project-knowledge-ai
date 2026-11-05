@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 import re
 from typing import Literal
@@ -33,37 +32,17 @@ app = FastAPI(
     description="Document Q&A API with Cloud Storage and Gemini on Vertex AI.",
     version="0.2.0",
 )
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(name)s: %(message)s")
-
-# Locally only loopback hosts are accepted. On Cloud Run the deploy script sets
-# ALLOWED_HOSTS to the service's domain (wildcards such as *.run.app are allowed).
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
-IAP_USER_HEADER = "x-goog-authenticated-user-email"
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 
 @app.middleware("http")
 async def restrict_browser_origin(request, call_next):
     origin = request.headers.get("origin")
     if origin:
-        # Behind Cloud Run's proxy the app sees http while the browser used https.
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-        expected_origin = f"{scheme}://{request.headers.get('host', '')}"
+        expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
         if origin.rstrip("/") != expected_origin:
             return JSONResponse(status_code=403, content={"detail": "Origin not allowed."})
     return await call_next(request)
-
-
-def current_user(request: Request) -> str | None:
-    """The signed-in user when running behind Identity-Aware Proxy; None locally."""
-    value = request.headers.get(IAP_USER_HEADER, "")
-    # IAP sends "accounts.google.com:user@example.com"
-    return value.split(":", 1)[-1] or None
-
-
-def client_key(request: Request) -> str:
-    """Rate limits are per signed-in user behind IAP, per client address otherwise."""
-    return current_user(request) or (request.client.host if request.client else "local")
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_LISTED_DOCUMENTS = 1000
@@ -89,7 +68,8 @@ def rate_limited(policy: str):
     """FastAPI dependency: enforce one limiter policy per client and expose the usage headers."""
 
     def dependency(request: Request, response: Response) -> Decision:
-        decision = LIMITER.check(policy, client_key(request))
+        key = request.client.host if request.client else "local"
+        decision = LIMITER.check(policy, key)
         if not decision.allowed:
             raise HTTPException(
                 status_code=429,
@@ -217,14 +197,7 @@ def frontend() -> FileResponse:
 @app.get("/usage")
 def usage(request: Request) -> dict[str, object]:
     """Current consumption of every rate-limit policy for this client (reading records nothing)."""
-    return {"policies": LIMITER.snapshot(client_key(request))}
-
-
-@app.get("/me")
-def me(request: Request) -> dict[str, object]:
-    """Who is using the app: the IAP identity on Cloud Run, or local mode."""
-    user = current_user(request)
-    return {"user": user, "mode": "cloud" if user else "local"}
+    return {"policies": LIMITER.snapshot(request.client.host if request.client else "local")}
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -678,6 +651,16 @@ def build_toolbox(settings) -> Toolbox:
             "summary": f"sync_github_repositories() → {len(outcome.results)} synced, {len(outcome.failures)} failed",
         }
 
+    def delete_doc(args):
+        decision = LIMITER.check("delete")
+        if not decision.allowed:
+            return {"error": f"Delete budget exhausted: {decision.used}/{decision.limit} this {decision.window}; retry in {decision.retry_after} s."}
+        try:
+            payload = delete_knowledge_base_object(str(args.get("uri", "")), settings)
+        except HTTPException as exc:
+            return {"error": exc.detail}
+        return {**payload, "summary": f"delete_document({payload['filename']}) → deleted from the bucket; the index follows within a minute"}
+
     def sharepoint(args):
         if blocked := _import_budget():
             return blocked
@@ -698,6 +681,9 @@ def build_toolbox(settings) -> Toolbox:
                  action=True, confirm_text=lambda a: f"Import the GitHub repository {a.get('repository_url')} into the knowledge base"),
         ToolSpec("sync_github_repositories", "Re-import every GitHub repository already in the knowledge base, picking up changed and removed files. Modifies data; the user confirms before it runs.",
                  {"type": "object", "properties": {}}, github_sync, action=True, confirm_text=lambda a: "Re-sync every imported GitHub repository"),
+        ToolSpec("delete_document", "Delete one document from the knowledge base (bucket and search index). Use the gs:// URI from list_documents or search_documents. Modifies data; the user confirms before it runs.",
+                 {"type": "object", "properties": {"uri": {"type": "string", "description": "The gs:// URI of the document"}}, "required": ["uri"]}, delete_doc,
+                 action=True, confirm_text=lambda a: f"Delete {a.get('uri')} from the knowledge base (recoverable for 7 days)"),
     ]
     if SharePointSettings.from_env().configured:
         specs.append(
@@ -716,6 +702,51 @@ def source_url(uri: str | None, metadata: dict[str, str], bucket_name: str) -> s
     if parts is None or parts[0] != bucket_name or Path(parts[1]).suffix.lower() not in SUPPORTED_TYPES:
         return None
     return f"/documents/file?uri={quote(uri, safe='')}"
+
+
+def _knowledge_base_object(uri: str, settings) -> tuple[str, str]:
+    """Validate that `uri` names a supported document of the configured bucket; return (bucket, name)."""
+    parts = split_gcs_uri(uri)
+    if parts is None or parts[0] != settings.gcs_bucket:
+        raise HTTPException(status_code=400, detail="Only objects of the configured bucket can be used.")
+    if Path(parts[1]).suffix.lower() not in SUPPORTED_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type.")
+    return parts
+
+
+def delete_knowledge_base_object(uri: str, settings) -> dict[str, str]:
+    """Delete one document from the bucket. The object.deleted trigger removes it from the index.
+
+    The bucket keeps soft-deleted objects for 7 days, so an accidental deletion can be restored
+    with `gcloud storage restore`.
+    """
+    bucket_name, object_name = _knowledge_base_object(uri, settings)
+    client = None
+    try:
+        client = storage.Client(project=settings.project_id)
+        blob = client.bucket(bucket_name).get_blob(object_name)
+        if blob is None:
+            raise HTTPException(status_code=404, detail="The document no longer exists in the bucket.")
+        filename = (blob.metadata or {}).get("original_filename") or Path(object_name).name
+        blob.delete()
+    except HTTPException:
+        raise
+    except google.auth.exceptions.GoogleAuthError as exc:
+        raise HTTPException(status_code=503, detail="No valid Application Default Credentials were found for GCP.") from exc
+    except GoogleAPIError as exc:
+        logger.exception("Deleting %s failed", uri)
+        raise HTTPException(status_code=502, detail="Cloud Storage could not delete the document.") from exc
+    finally:
+        if client is not None:
+            client.close()
+    logger.info("Deleted %s (%s); the delete trigger removes it from the index", uri, filename)
+    return {"deleted": uri, "filename": filename, "status": "deleted"}
+
+
+@app.delete("/documents")
+def delete_document(uri: str = Query(min_length=6, max_length=1024), _: Decision = Depends(rate_limited("delete"))) -> dict[str, str]:
+    """Delete one document of the knowledge base (bucket + index via the delete trigger)."""
+    return delete_knowledge_base_object(uri, _require_gcp_settings())
 
 
 @app.get("/documents/file", include_in_schema=False)
