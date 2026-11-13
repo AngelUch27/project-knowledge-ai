@@ -50,3 +50,60 @@ def test_extract_text_reads_markdown_as_utf8():
 
 def test_extract_text_ignores_unknown_suffix():
     assert _extract_text(".exe", b"\x00\x01") == ""
+
+
+def test_pdf_extraction_stops_at_the_page_cap(monkeypatch):
+    from backend import passages
+
+    class Page:
+        def __init__(self, n):
+            self.n = n
+
+        def extract_text(self):
+            return f"page {self.n}"
+
+    class Reader:
+        def __init__(self, _data):
+            self.pages = [Page(i) for i in range(50)]
+
+    monkeypatch.setattr("pypdf.PdfReader", Reader)
+    monkeypatch.setattr(passages, "MAX_PDF_PAGES", 3)
+    assert passages._extract_pdf(b"%PDF") == "page 0\n\npage 1\n\npage 2"
+
+
+def test_fetch_document_caches_extracted_text_per_object_version(monkeypatch):
+    from backend import passages
+
+    downloads = []
+
+    class Blob:
+        metadata = {"original_filename": "a.md"}
+        size = 10
+        md5_hash = "abc=="
+        generation = 1
+
+        def download_as_bytes(self):
+            downloads.append(1)
+            return b"# hello"
+
+    class Bucket:
+        def get_blob(self, name):
+            return Blob()
+
+    class Client:
+        def __init__(self, project=None):
+            pass
+
+        def bucket(self, name):
+            return Bucket()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(passages.storage, "Client", Client)
+    passages._TEXT_CACHE.clear()
+    first = passages.fetch_document("gs://b/a.md", "p")
+    second = passages.fetch_document("gs://b/a.md", "p")
+    assert first.text == "# hello" and second.text == "# hello"
+    assert len(downloads) == 1  # second call served from the cache
+    assert second.metadata == {"original_filename": "a.md"}
