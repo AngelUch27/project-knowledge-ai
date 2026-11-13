@@ -13,6 +13,7 @@ import html
 import io
 import logging
 import re
+import time
 import zipfile
 from pathlib import PurePosixPath
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 MAX_SOURCE_BYTES = 15 * 1024 * 1024
 MAX_TEXT_CHARS = 400_000
+MAX_PDF_PAGES = 400
+EXTRACT_TIME_BUDGET_S = 20.0
 CHUNK_CHARS = 900
 _TAG = re.compile(r"<[^>]+>")
 _WORD = re.compile(r"[\w'-]{3,}", re.UNICODE)
@@ -65,6 +68,10 @@ def fetch_document(gcs_uri: str, project_id: str) -> FetchedDocument | None:
         metadata = dict(blob.metadata or {})
         if (blob.size or 0) > MAX_SOURCE_BYTES:
             return FetchedDocument(text=None, metadata=metadata)
+        cache_key = f"{gcs_uri}#{blob.md5_hash or blob.generation}"
+        cached = _TEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return FetchedDocument(text=cached, metadata=metadata)
         data = blob.download_as_bytes()
     except Exception:  # noqa: BLE001 - context is best effort; the caller falls back to snippets
         logger.warning("Could not read %s for answer context", gcs_uri, exc_info=True)
@@ -79,8 +86,21 @@ def fetch_document(gcs_uri: str, project_id: str) -> FetchedDocument | None:
         logger.warning("Could not extract text from %s", gcs_uri, exc_info=True)
         return FetchedDocument(text=None, metadata=metadata)
     text = re.sub(r"[ \t]+", " ", text or "")
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return FetchedDocument(text=text[:MAX_TEXT_CHARS] or None, metadata=metadata)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()[:MAX_TEXT_CHARS]
+    _remember(cache_key, text)
+    return FetchedDocument(text=text or None, metadata=metadata)
+
+
+# Extracted text per object version: the same document is read again and again
+# within a conversation, and PDF extraction is the slow part.
+_TEXT_CACHE: dict[str, str] = {}
+TEXT_CACHE_SIZE = 16
+
+
+def _remember(key: str, text: str) -> None:
+    if len(_TEXT_CACHE) >= TEXT_CACHE_SIZE:
+        _TEXT_CACHE.pop(next(iter(_TEXT_CACHE)))
+    _TEXT_CACHE[key] = text
 
 
 def object_metadata(gcs_uri: str, project_id: str) -> dict[str, str] | None:
@@ -118,10 +138,7 @@ def _extract_text(suffix: str, data: bytes) -> str:
     if suffix == ".html":
         return html.unescape(_TAG.sub(" ", data.decode("utf-8", errors="replace")))
     if suffix == ".pdf":
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        return _extract_pdf(data)
     if suffix == ".docx":
         import docx
 
@@ -134,6 +151,33 @@ def _extract_text(suffix: str, data: bytes) -> str:
     if suffix in {".pptx", ".xlsx", ".xlsm"}:
         return _office_xml_text(data)
     return ""
+
+
+def _extract_pdf(data: bytes) -> str:
+    """Page by page, stopping at the text budget, the page cap or the time budget.
+
+    A 10 MB, several-hundred-page PDF took minutes to extract in full on a
+    1-vCPU Cloud Run instance; the answer only needs the first MAX_TEXT_CHARS
+    anyway, and a bounded extraction keeps every question under the request
+    timeout.
+    """
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    started = time.monotonic()
+    parts: list[str] = []
+    total = 0
+    for index, page in enumerate(reader.pages):
+        if index >= MAX_PDF_PAGES or total >= MAX_TEXT_CHARS or time.monotonic() - started > EXTRACT_TIME_BUDGET_S:
+            logger.info("PDF extraction stopped at page %d (%d chars, %.1fs)", index, total, time.monotonic() - started)
+            break
+        try:
+            text = page.extract_text() or ""
+        except Exception:  # noqa: BLE001 - a broken page must not lose the rest
+            text = ""
+        parts.append(text)
+        total += len(text)
+    return "\n\n".join(parts)
 
 
 def _office_xml_text(data: bytes) -> str:
