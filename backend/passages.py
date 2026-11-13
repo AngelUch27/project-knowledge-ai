@@ -83,21 +83,27 @@ def fetch_document(gcs_uri: str, project_id: str) -> FetchedDocument | None:
     return FetchedDocument(text=text[:MAX_TEXT_CHARS] or None, metadata=metadata)
 
 
-def object_exists(gcs_uri: str, project_id: str) -> bool:
-    """True when the object is still in the bucket; on any error assume it exists."""
+def object_metadata(gcs_uri: str, project_id: str) -> dict[str, str] | None:
+    """The object's custom metadata; None when it no longer exists; {} on a transient error."""
     parts = split_gcs_uri(gcs_uri)
     if parts is None:
-        return False
+        return None
     client = None
     try:
         client = storage.Client(project=project_id)
-        return client.bucket(parts[0]).get_blob(parts[1]) is not None
+        blob = client.bucket(parts[0]).get_blob(parts[1])
+        return None if blob is None else dict(blob.metadata or {})
     except Exception:  # noqa: BLE001 - never hide a result because of a transient error
-        logger.warning("Could not check whether %s exists", gcs_uri, exc_info=True)
-        return True
+        logger.warning("Could not read metadata of %s", gcs_uri, exc_info=True)
+        return {}
     finally:
         if client is not None:
             client.close()
+
+
+def object_exists(gcs_uri: str, project_id: str) -> bool:
+    """True when the object is still in the bucket; on any error assume it exists."""
+    return object_metadata(gcs_uri, project_id) is not None
 
 
 def fetch_document_text(gcs_uri: str, project_id: str) -> str | None:

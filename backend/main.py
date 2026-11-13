@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from backend.agent import ToolCall, ToolSpec, Toolbox, run_agent
 from backend.github_import import GitHubImportError, import_repository, sync_all_repositories
-from backend.passages import fetch_document, object_exists, select_passages, split_gcs_uri
+from backend.passages import fetch_document, object_metadata, select_passages, split_gcs_uri
 from backend.ratelimit import Decision, SlidingWindowLimiter
 from backend.settings import get_settings
 from backend.sharepoint_import import SharePointImportError, SharePointSettings, import_site
@@ -551,21 +551,45 @@ def ask_question(request: QuestionRequest, limit: Decision = Depends(rate_limite
     )
 
 
-def drop_missing_results(results: list[SearchResultItem], exists) -> list[SearchResultItem]:
-    """Hide results whose object is gone from the bucket.
+_POOR_TITLE = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|crawled_content|untitled|document)?$", re.I)
+
+
+def display_title(title: str | None, uri: str | None, metadata: dict[str, str]) -> str:
+    """A human title for a result: the uploaded file name, else the index title, else the object name.
+
+    Agent Search titles PDFs by their object name (a UUID for uploads) and
+    spreadsheets as "crawled_content"; the upload's original_filename metadata
+    is what people recognise.
+    """
+    original = (metadata or {}).get("original_filename")
+    if original:
+        return original
+    if title and not _POOR_TITLE.fullmatch(title.strip()):
+        return title
+    parts = split_gcs_uri(uri or "")
+    return Path(parts[1]).name if parts else (title or "Untitled")
+
+
+def resolve_results(results: list[SearchResultItem], lookup) -> tuple[list[SearchResultItem], list[dict[str, str]]]:
+    """Check each result against the bucket: drop deleted objects, fix titles, return metadata.
 
     Agent Search's serving index lags behind document deletions (hours were
     observed), so a deleted file can keep surfacing with stale snippets. The
-    bucket is the source of truth: a result with a gs:// URI that no longer
-    exists is dropped, and the agent sees it as not found.
+    bucket is the source of truth: `lookup(uri)` returns the object's metadata,
+    or None when it is gone, in which case the result is dropped.
     """
-    kept = []
+    kept, metadata_list = [], []
     for result in results:
-        if result.uri and result.uri.startswith("gs://") and not exists(result.uri):
-            logger.info("Dropping stale search result %s (object no longer exists)", result.uri)
-            continue
-        kept.append(result)
-    return kept
+        metadata: dict[str, str] = {}
+        if result.uri and result.uri.startswith("gs://"):
+            found = lookup(result.uri)
+            if found is None:
+                logger.info("Dropping stale search result %s (object no longer exists)", result.uri)
+                continue
+            metadata = found
+        kept.append(result.model_copy(update={"title": display_title(result.title, result.uri, metadata)}))
+        metadata_list.append(metadata)
+    return kept, metadata_list
 
 
 def history_contents(history: list[ChatTurn]) -> list[Content]:
@@ -584,14 +608,14 @@ def build_toolbox(settings) -> Toolbox:
         return {"filename": title, "location": uri or title, "url": source_url(uri, metadata, bucket)}
 
     def search(args):
-        results = drop_missing_results(
+        results, metadata = resolve_results(
             _search_agent_search(str(args.get("query", ""))[:2000], settings),
-            lambda uri: object_exists(uri, settings.project_id),
+            lambda uri: object_metadata(uri, settings.project_id),
         )
         return {
             "results": [{"title": r.title, "uri": r.uri, "snippets": r.snippets} for r in results],
             "summary": f"search_documents({args.get('query')!r}) → {len(results)} results",
-            "_sources": [_source(r.title, r.uri, {}) for r in results if r.uri],
+            "_sources": [_source(r.title, r.uri, m) for r, m in zip(results, metadata) if r.uri],
         }
 
     def read(args):

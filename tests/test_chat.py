@@ -63,14 +63,29 @@ def test_file_route_only_serves_the_configured_bucket(client):
 
 # --- stale search results -----------------------------------------------------
 
-def test_search_results_whose_object_is_gone_are_dropped():
+def test_search_results_whose_object_is_gone_are_dropped_and_titles_fixed():
     results = [
         main.SearchResultItem(document_id="1", title="Deleted", uri="gs://b/github/raw/x/old.md", snippets=["stale"]),
         main.SearchResultItem(document_id="2", title="Alive", uri="gs://b/documents/raw/sop.docx", snippets=["ok"]),
-        main.SearchResultItem(document_id="3", title="No URI", uri=None, snippets=[]),
+        main.SearchResultItem(document_id="3", title="1262cabf-db6c-42e9-b78d-0bd2c57397d2", uri="gs://b/documents/raw/1262cabf-db6c-42e9-b78d-0bd2c57397d2.pdf", snippets=[]),
+        main.SearchResultItem(document_id="4", title="crawled_content", uri="gs://b/documents/raw/Plant_Configuration.xlsx", snippets=[]),
+        main.SearchResultItem(document_id="5", title="No URI", uri=None, snippets=[]),
     ]
-    kept = main.drop_missing_results(results, exists=lambda uri: uri.endswith("sop.docx"))
-    assert [r.title for r in kept] == ["Alive", "No URI"]
+    metadata = {
+        "gs://b/documents/raw/sop.docx": {},
+        "gs://b/documents/raw/1262cabf-db6c-42e9-b78d-0bd2c57397d2.pdf": {"original_filename": "CCT-2023-2025.pdf"},
+        "gs://b/documents/raw/Plant_Configuration.xlsx": {},
+    }
+    kept, meta = main.resolve_results(results, lookup=metadata.get)  # the deleted one returns None
+    assert [r.title for r in kept] == ["Alive", "CCT-2023-2025.pdf", "Plant_Configuration.xlsx", "No URI"]
+    assert meta[1] == {"original_filename": "CCT-2023-2025.pdf"}
+
+
+def test_display_title_rules():
+    assert main.display_title("README", "gs://b/github/raw/o/r/README.md", {}) == "README"
+    assert main.display_title("", "gs://b/documents/raw/x.pdf", {}) == "x.pdf"
+    assert main.display_title("Deployment SOP", "gs://b/d.docx", {"original_filename": "Deployment_SOP.docx"}) == "Deployment_SOP.docx"
+    assert main.display_title(None, None, {}) == "Untitled"
 
 
 # --- toolbox wiring -----------------------------------------------------------
