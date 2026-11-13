@@ -385,6 +385,7 @@
     function toggleTheme(){const next=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('theme',next)}catch(e){}applyTheme()}
     $('#theme-toggle').addEventListener('click',toggleTheme);$('#theme-toggle-mobile').addEventListener('click',toggleTheme);themeMedia.addEventListener('change',applyTheme);applyTheme();
 
+    if(!['localhost','127.0.0.1','[::1]'].includes(location.hostname)){$('#mode-label').textContent='Cloud Run';$('#mode-pill').title='Running on Google Cloud Run'}
     (async()=>{try{const r=await fetch('/me');const m=await r.json();if(m.user){$('#mode-label').textContent=m.user;$('#mode-pill').title='Signed in through Identity-Aware Proxy';$$('.secure-note').forEach(n=>n.innerHTML='<b><span class="dot" aria-hidden="true"></span>Team deployment</b>Access is limited to authorized Google accounts through Identity-Aware Proxy.')}}catch(e){}})();
     /* Navigation */
     function setPage(name){$$('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('#crumb').textContent={chat:'Chat',documents:'Documents',activity:'Activity'}[name];if(name==='documents'||name==='activity')loadDocuments();if(name==='chat')setTimeout(()=>$('#question').focus(),50)}
