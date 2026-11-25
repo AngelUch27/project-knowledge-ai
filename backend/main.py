@@ -121,6 +121,11 @@ class SourceReference(BaseModel):
     filename: str
     location: str
     url: str | None = None
+    source_type: str | None = None
+    site: str | None = None
+    library: str | None = None
+    repository: str | None = None
+    original_filename: str | None = None
 
 
 class AgentStepOut(BaseModel):
@@ -605,7 +610,20 @@ def build_toolbox(settings) -> Toolbox:
     bucket = settings.gcs_bucket
 
     def _source(title: str, uri: str | None, metadata: dict[str, str]) -> dict[str, object]:
-        return {"filename": title, "location": uri or title, "url": source_url(uri, metadata, bucket)}
+        parts = split_gcs_uri(uri or "")
+        source_type = metadata.get("source_type")
+        if source_type is None and parts and parts[1].startswith("documents/raw/"):
+            source_type = "upload"
+        return {
+            "filename": title,
+            "location": uri or title,
+            "url": source_url(uri, metadata, bucket),
+            "source_type": source_type,
+            "site": metadata.get("site"),
+            "library": metadata.get("library"),
+            "repository": metadata.get("repository"),
+            "original_filename": metadata.get("original_filename") or title,
+        }
 
     def search(args):
         results, metadata = resolve_results(

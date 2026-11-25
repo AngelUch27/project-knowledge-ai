@@ -88,6 +88,37 @@ def test_display_title_rules():
     assert main.display_title(None, None, {}) == "Untitled"
 
 
+def test_search_source_includes_import_provenance(monkeypatch):
+    uri = "gs://knowledge-agent-cap/sharepoint/raw/contoso.sharepoint.com/sites/PlantA/Finance/Closing.docx"
+    metadata = {
+        "source_type": "sharepoint",
+        "site": "contoso.sharepoint.com/sites/PlantA",
+        "library": "Finance",
+        "original_filename": "Closing.docx",
+    }
+    monkeypatch.setenv("GCP_PROJECT_ID", "p")
+    monkeypatch.setenv("GCS_BUCKET", "knowledge-agent-cap")
+    monkeypatch.setattr(
+        main,
+        "_search_agent_search",
+        lambda query, settings: [main.SearchResultItem(document_id="1", title="Closing.docx", uri=uri, snippets=[])],
+    )
+    monkeypatch.setattr(main, "object_metadata", lambda gcs_uri, project_id: metadata)
+
+    result = main.build_toolbox(main.get_settings()).get("search_documents").run({"query": "closing"})
+
+    assert result["_sources"][0] == {
+        "filename": "Closing.docx",
+        "location": uri,
+        "url": "/documents/file?uri=gs%3A%2F%2Fknowledge-agent-cap%2Fsharepoint%2Fraw%2Fcontoso.sharepoint.com%2Fsites%2FPlantA%2FFinance%2FClosing.docx",
+        "source_type": "sharepoint",
+        "site": "contoso.sharepoint.com/sites/PlantA",
+        "library": "Finance",
+        "repository": None,
+        "original_filename": "Closing.docx",
+    }
+
+
 # --- toolbox wiring -----------------------------------------------------------
 
 def test_toolbox_marks_only_writing_tools_as_actions(monkeypatch):
