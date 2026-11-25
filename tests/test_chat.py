@@ -32,6 +32,7 @@ def test_system_instruction_covers_language_tools_and_untrusted_content():
     text = main.SYSTEM_INSTRUCTION
     assert "same language" in text
     assert "search_documents" in text and "read_document" in text
+    assert "list_github_repositories" in text
     assert "untrusted" in text
 
 
@@ -125,10 +126,39 @@ def test_toolbox_marks_only_writing_tools_as_actions(monkeypatch):
     monkeypatch.delenv("SHAREPOINT_CLIENT_SECRET", raising=False)
     toolbox = main.build_toolbox(main.get_settings())
     names = {d.name for d in toolbox.declarations()}
-    assert {"search_documents", "read_document", "list_documents", "github_repository_status", "import_github_repository", "sync_github_repositories"} <= names
+    assert {
+        "search_documents",
+        "read_document",
+        "list_documents",
+        "github_repository_status",
+        "list_github_repositories",
+        "import_github_repository",
+        "sync_github_repositories",
+    } <= names
     assert "import_sharepoint_site" not in names  # hidden until SHAREPOINT_* is configured
     assert not toolbox.get("search_documents").action
+    assert not toolbox.get("list_github_repositories").action
     assert toolbox.get("import_github_repository").action and toolbox.get("sync_github_repositories").action
+
+
+@pytest.mark.parametrize("repositories", [["acme/docs", "acme/platform"], []])
+def test_list_github_repositories_tool_returns_staged_repositories(monkeypatch, repositories):
+    monkeypatch.setenv("GCS_BUCKET", "knowledge-agent-cap")
+
+    def list_repositories(bucket):
+        assert bucket == "knowledge-agent-cap"
+        return repositories
+
+    monkeypatch.setattr(main, "list_staged_repositories", list_repositories)
+    tool = main.build_toolbox(main.get_settings()).get("list_github_repositories")
+
+    result = tool.run({})
+
+    assert result == {
+        "repositories": repositories,
+        "count": len(repositories),
+        "summary": f"list_github_repositories() → {len(repositories)} repositories",
+    }
 
 
 def test_read_document_refuses_uris_outside_the_knowledge_base_bucket(monkeypatch):
