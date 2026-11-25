@@ -132,6 +132,7 @@ class AgentStepOut(BaseModel):
     tool: str
     args: dict[str, object]
     summary: str
+    result: dict[str, object] | None = None
 
 
 class QuestionResponse(BaseModel):
@@ -549,7 +550,7 @@ def ask_question(request: QuestionRequest, limit: Decision = Depends(rate_limite
     return QuestionResponse(
         answer=result.answer,
         sources=[SourceReference(**source) for source in result.sources],
-        steps=[AgentStepOut(tool=s.tool, args=s.args, summary=s.summary) for s in result.steps],
+        steps=[AgentStepOut(tool=s.tool, args=s.args, summary=s.summary, result=s.result) for s in result.steps],
         pending_action=ActionCall(name=result.pending_action.name, args=result.pending_action.args) if result.pending_action else None,
         pending_description=result.pending_description,
         usage=limit.usage(),
