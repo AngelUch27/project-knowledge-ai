@@ -50,6 +50,7 @@ class AgentStep:
     tool: str
     args: dict[str, Any]
     summary: str
+    result: dict[str, Any] | None = None
 
 
 @dataclass
@@ -157,8 +158,17 @@ def run_agent(
                 if key and key not in seen_sources:
                     seen_sources.add(key)
                     result.sources.append(source)
-            result.steps.append(AgentStep(tool=tool_call.name, args=tool_call.args, summary=_summarize(tool_call.name, tool_call.args, tool_result)))
-            response_parts.append(Part.from_function_response(name=tool_call.name, response=_truncate(tool_result)))
+            tool_response = _truncate(tool_result)
+            step_result = tool_response if tool_call.name in {"search_documents", "read_document"} else None
+            result.steps.append(
+                AgentStep(
+                    tool=tool_call.name,
+                    args=tool_call.args,
+                    summary=_summarize(tool_call.name, tool_call.args, tool_result),
+                    result=step_result,
+                )
+            )
+            response_parts.append(Part.from_function_response(name=tool_call.name, response=tool_response))
         contents.append(Content(role="user", parts=response_parts))
 
     # Step budget exhausted: ask for the best answer with what was gathered, no more tools.

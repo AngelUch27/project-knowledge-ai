@@ -68,6 +68,8 @@ def test_agent_searches_then_reads_then_answers_and_dedupes_sources():
 
     assert result.answer == "PDF and MD (Source: README)."
     assert [s.tool for s in result.steps] == ["search_documents", "read_document"]
+    assert result.steps[0].result == {"results": [{"title": "README", "uri": "gs://b/README.md"}]}
+    assert result.steps[1].result == {"passages": ["Supported formats are PDF and MD."]}
     assert [(k, a.get("query") or a.get("uri")) for k, a in log] == [("search", "formats"), ("read", "gs://b/README.md")]
     assert result.sources == [{"filename": "README", "location": "gs://b/README.md", "url": "/f"}]  # once, not twice
     assert result.pending_action is None
